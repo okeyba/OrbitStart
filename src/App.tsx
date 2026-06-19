@@ -58,6 +58,14 @@ import {
 } from "./desktop/contextMenu";
 import { installDesktopShell } from "./desktop/desktopShell";
 import { closeWindow, getAppWindow, minimizeWindow, startWindowDrag, toggleMaximizeWindow } from "./desktop/windowControls";
+import { buildSortedResults, matchesItemEnhanced as scoreMatchesItem, matchesCommandEnhanced as scoreMatchesCommand, scoreItem } from "./lib/searchEngine";
+import {
+  shouldShowOnboarding,
+  completeOnboarding,
+  skipOnboarding,
+  type ScenarioTag
+} from "./lib/onboarding";
+import { OnboardingWizard } from "./components/OnboardingWizard";
 import {
   createItem,
   createItemsFromPaths,
@@ -257,18 +265,11 @@ function isTauriRuntime() {
 }
 
 function matchesItem(item: OrbitItem, query: string) {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized) return true;
-  return [item.title, item.subtitle, item.kind, ...splitGroupIds(item.group), item.target, ...item.aliases, ...item.tags]
-    .join(" ")
-    .toLowerCase()
-    .includes(normalized);
+  return scoreMatchesItem(item, query);
 }
 
 function matchesCommand(command: OrbitCommand, query: string) {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized) return true;
-  return [command.title, command.subtitle, command.pluginId, ...command.keywords].join(" ").toLowerCase().includes(normalized);
+  return scoreMatchesCommand(command, query);
 }
 
 function inputFromItem(item: OrbitItem): OrbitItemInput {
@@ -350,6 +351,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [pluginResults, setPluginResults] = useState<SearchResult[]>([]);
+  const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0);
+  const [showOnboarding, setShowOnboarding] = useState(() => shouldShowOnboarding());
   const [toast, setToast] = useState("OrbitStart：正在加载本地工作台状态");
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [backupOpen, setBackupOpen] = useState(false);
@@ -600,13 +603,34 @@ export default function App() {
   });
 
   const filteredItems = useMemo(() => {
-    return items
+    const matched = items
       .filter(itemKindAllowed)
       .filter((item) => {
         if (activeGroup === "all") return true;
         return itemHasGroup(item, activeGroup);
       })
       .filter((item) => matchesItem(item, query));
+
+    const q = query.trim().toLowerCase();
+    if (!q) {
+      return matched;
+    }
+
+    return matched.slice().sort((a, b) => {
+      const scoreA = scoreItem(a, query);
+      const scoreB = scoreItem(b, query);
+      if (scoreA !== scoreB) {
+        return scoreB - scoreA;
+      }
+      // Tie breaker: database order (favorite, launchCount, etc.)
+      const aFav = a.favorite ? 1 : 0;
+      const bFav = b.favorite ? 1 : 0;
+      if (aFav !== bFav) return bFav - aFav;
+      const aLaunch = a.launchCount ?? 0;
+      const bLaunch = b.launchCount ?? 0;
+      if (aLaunch !== bLaunch) return bLaunch - aLaunch;
+      return a.title.localeCompare(b.title, "zh-Hans-CN");
+    });
   }, [activeGroup, items, plugins, query]);
 
   const favoriteItems = filteredItems.filter((item) => item.favorite);
@@ -1223,38 +1247,73 @@ export default function App() {
   }
 
   const paletteCommands = useMemo(() => {
-    const builtInResults: SearchResult[] = commands.filter((command) => matchesCommand(command, paletteQuery)).map((command) => ({
-      id: command.id,
-      title: command.title,
-      subtitle: command.subtitle,
-      icon: command.icon,
-      source: command.pluginId,
-      actionLabel: "执行命令",
-      run: () => handleCommand(command)
-    }));
+    const raw = buildSortedResults({
+      items,
+      commands,
+      paletteQuery,
+      itemFilter: itemKindAllowed,
+      toItemResult: (item) => ({
+        id: `item:${item.id}`,
+        title: item.title,
+        subtitle: item.subtitle,
+        icon: item.icon,
+        source: item.kind,
+        actionLabel: "打开",
+        run: () => openItem(item)
+      }),
+      toCommandResult: (command) => ({
+        id: command.id,
+        title: command.title,
+        subtitle: command.subtitle,
+        icon: command.icon,
+        source: command.pluginId,
+        actionLabel: "执行命令",
+        run: () => handleCommand(command)
+      }),
+      extraPluginResults: [
+        ...pluginHost.commands.list().map((command) => ({
+          id: command.id,
+          title: command.title,
+          subtitle: command.subtitle,
+          icon: command.icon,
+          source: command.pluginId,
+          actionLabel: "执行插件命令",
+          run: command.run
+        })),
+        ...pluginResults
+      ]
+    });
 
-    const itemResults: SearchResult[] = items.filter(itemKindAllowed).filter((item) => matchesItem(item, paletteQuery)).map((item) => ({
-      id: `item:${item.id}`,
-      title: item.title,
-      subtitle: item.subtitle,
-      icon: item.icon,
-      source: item.kind,
-      actionLabel: "打开",
-      run: () => openItem(item)
-    }));
-
-    const pluginCommandResults = pluginHost.commands.list().filter((command) => matchesCommand(command, paletteQuery)).map((command) => ({
-      id: command.id,
-      title: command.title,
-      subtitle: command.subtitle,
-      icon: command.icon,
-      source: command.pluginId,
-      actionLabel: "执行插件命令",
-      run: command.run
-    }));
-
-    return [...itemResults, ...builtInResults, ...pluginCommandResults, ...pluginResults].slice(0, 16);
+    // Auto-reset selection when results change, keep in bounds
+    setPaletteSelectedIndex((prev) => Math.min(prev, Math.max(0, raw.length - 1)));
+    return raw;
   }, [commands, items, paletteQuery, pluginHost, pluginResults, plugins]);
+
+  /** Keyboard navigation handler for command palette. */
+  const handlePaletteKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    const total = paletteCommands.length;
+    if (total === 0) return;
+
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        setPaletteSelectedIndex((prev) => (prev + 1) % total);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        setPaletteSelectedIndex((prev) => (prev - 1 + total) % total);
+        break;
+      case "Enter":
+        event.preventDefault();
+        const selected = paletteCommands[paletteSelectedIndex];
+        if (selected) { selected.run(); setPaletteOpen(false); }
+        break;
+      case "Escape":
+        event.preventDefault();
+        setPaletteOpen(false);
+        break;
+    }
+  };
 
   const navItems: Array<{ id: ViewId; title: string; icon: JSX.Element }> = [
     { id: "dashboard", title: "工作台", icon: <LayoutDashboard size={21} /> },
@@ -1822,7 +1881,7 @@ export default function App() {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用引擎</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.4.5</strong>版本</span>
+          <span><strong>0.4.8</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -2408,6 +2467,55 @@ export default function App() {
 
   return (
     <>
+      {showOnboarding && (
+        <OnboardingWizard
+          onTemplateSelected={(tags) => {
+            // Convert ScenarioTag[] to OrbitItem[] and add to items state
+            const newItems: OrbitItem[] = tags.map((t) => ({
+              id: t.id,
+              title: t.title,
+              subtitle: t.kind === "app" ? "本地程序" : t.kind === "website" ? "网址" : t.kind === "folder" ? "文件夹" : t.kind === "script" ? "脚本" : "动作链",
+              kind: t.kind,
+              group: "all",
+              target: t.target,
+              aliases: [],
+              tags: [t.kind === "action_chain" ? "automation" : "template"],
+              icon: t.icon,
+              accent: t.accent,
+              favorite: t.favorite ?? false,
+              launchCount: 0
+            }));
+            setItems((prev) => [...prev, ...newItems]);
+            setToast(`已创建 ${newItems.length} 个示例资源`);
+          }}
+          onScanShortcuts={async () => {
+            setBusy(true);
+            setToast("正在扫描桌面和开始菜单...");
+            try {
+              await runNativeItemScan("shortcuts");
+            } catch (e) {
+              setToast(`扫描失败：${String(e)}`);
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onScanBookmarks={async () => {
+            setBusy(true);
+            setToast("正在扫描浏览器书签...");
+            try {
+              await runNativeItemScan("bookmarks");
+            } catch (e) {
+              setToast(`扫描失败：${String(e)}`);
+            } finally {
+              setBusy(false);
+            }
+          }}
+          onComplete={() => {
+            setShowOnboarding(false);
+            setToast("欢迎使用 OrbitStart！按 Ctrl+K 随时唤起命令面板");
+          }}
+        />
+      )}
       <main className={`app-shell density-${density} view-${activeView}`} style={appShellStyle} onContextMenu={handleAppContextMenu}>
       {isLocalGalaxyTheme && (
         <LocalGalaxyBackdrop
@@ -2519,7 +2627,12 @@ export default function App() {
       {dialog && renderAppDialog()}
 
       {paletteOpen && (
-        <section className="palette-backdrop" role="dialog" aria-modal="true">
+        <section
+          className="palette-backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => { if (e.target === e.currentTarget) setPaletteOpen(false); }}
+        >
           <div className="command-palette">
             <div className="palette-input">
               <Search size={20} />
@@ -2527,21 +2640,38 @@ export default function App() {
                 ref={paletteInputRef}
                 value={paletteQuery}
                 onChange={(event) => setPaletteQuery(event.target.value)}
-                placeholder="输入命令、资源名称、引擎功能..."
+                onKeyDown={handlePaletteKeyDown}
+                placeholder="搜索应用、文件、网址、脚本、插件或拼音首字母..."
+                autoFocus
               />
-              <button type="button" title="关闭" onClick={() => setPaletteOpen(false)}>
-                <X size={18} />
-              </button>
+              {paletteQuery ? (
+                <button type="button" title="清空" onClick={() => setPaletteQuery("")} className="palette-clear-btn">
+                  <X size={16} />
+                </button>
+              ) : (
+                <button type="button" title="关闭" onClick={() => setPaletteOpen(false)}>
+                  <X size={18} />
+                </button>
+              )}
             </div>
             <div className="palette-results">
-              {paletteCommands.map((result) => (
+              {paletteCommands.length === 0 && (
+                <div className="palette-empty">
+                  <Search size={24} />
+                  <span>未找到匹配结果</span>
+                  <small>试试拼音首字母或更短的关键词</small>
+                </div>
+              )}
+              {paletteCommands.map((result, idx) => (
                 <button
                   type="button"
                   key={result.id}
+                  className={idx === paletteSelectedIndex ? "result-selected" : ""}
                   onClick={async () => {
                     await result.run();
                     setPaletteOpen(false);
                   }}
+                  onMouseEnter={() => setPaletteSelectedIndex(idx)}
                 >
                   <span className="result-icon">
                     <Icon name={result.icon} size={22} />

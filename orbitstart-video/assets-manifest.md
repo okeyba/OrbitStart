@@ -8,7 +8,7 @@
 
 截图尺寸均为 1920x1080。
 
-当前 HTML 视频实现要求：产品截图默认完整显示，不再使用裁切式背景。Frame 05 使用 `local-import.png`，Frame 06 使用 `action-chain.png`。
+当前 HTML 视频实现要求：产品截图默认完整显示，不再使用裁切式背景。涉及本地路径的画面使用用户手动处理后的素材：Frame 03 使用 `local-import-redacted.png`，Frame 04/06 使用 `action-chain-redacted.png`，Frame 08 使用 `settings-center-manual.png`，Frame 10 使用 `data-backup-redacted.png`，Frame 11 使用 `runtime-logs.png`，Frame 12 使用 `closing-dashboard-full.png`。
 
 | 文件 | 用途 |
 | --- | --- |
@@ -19,8 +19,14 @@
 | `E:\OrbitStart\orbitstart-video\assets\screenshots\theme-studio.png` | 主题工作室、Local Galaxy 和主题 token 扩展 |
 | `E:\OrbitStart\orbitstart-video\assets\screenshots\themes\all-themes-contact-sheet.png` | 15 套主题总览 |
 | `E:\OrbitStart\orbitstart-video\assets\screenshots\themes\theme-studio-all.png` | 主题工作室完整主题分组 |
-| `E:\OrbitStart\orbitstart-video\assets\user-supplied\local-import.png` | Frame 05，本地导入使用的“批量导入过滤：本地程序”截图 |
-| `E:\OrbitStart\orbitstart-video\assets\user-supplied\action-chain.png` | Frame 06，动作链使用的真实资源中心截图 |
+| `E:\OrbitStart\orbitstart-video\assets\user-supplied\local-import.png` | 本地导入原始截图，保留作备份，不直接用于视频 |
+| `E:\OrbitStart\orbitstart-video\assets\user-supplied\local-import-redacted.png` | Frame 03，本地导入使用的用户手动处理截图 |
+| `E:\OrbitStart\orbitstart-video\assets\user-supplied\action-chain.png` | 资源中心原始截图，保留作备份，不直接用于视频 |
+| `E:\OrbitStart\orbitstart-video\assets\user-supplied\action-chain-redacted.png` | Frame 04/06，资源中心与动作链使用的用户手动处理截图 |
+| `E:\OrbitStart\orbitstart-video\assets\user-supplied\settings-center-manual.png` | Frame 08，设置中心使用的用户手动处理截图 |
+| `E:\OrbitStart\orbitstart-video\assets\user-supplied\data-backup-redacted.png` | Frame 10，数据备份设置使用的用户手动处理截图 |
+| `E:\OrbitStart\orbitstart-video\assets\user-supplied\runtime-logs.png` | Frame 11，运行日志完整截图 |
+| `E:\OrbitStart\orbitstart-video\assets\user-supplied\closing-dashboard-full.png` | Frame 12，片尾放大的真实资源中心截图 |
 
 ## 主题截图
 

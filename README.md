@@ -1,197 +1,210 @@
 # OrbitStart
 
-OrbitStart 是一个本地优先、可扩展的 Windows 启动工作台，你可以把看作一个拥有很多收纳盒的收纳柜，它可以将应用、网址、文件、工作区、脚本、插件和动作入口汇聚到一个统一的资源中心。它的理念不是替代系统桌面，而是为用户建立一个更清晰、更高效的「个人启动中枢」：你可以按照真实任务来组织数字资源，而不是让资源散落在桌面、开始菜单、浏览器书签和不同文件夹里。
+<div align="center">
 
-例如，做剪辑工作时，可以创建一个「剪辑」标签，把 Premiere Pro、Photoshop、DaVinci Resolve、素材文件夹、字体库、音效网站、视频素材网站和常用导出目录放在一起；做数据分析时，可以创建一个「数据分析」标签，把 Word、Excel、Python/R 脚本、数据查看软件、统计分析工具、作图软件和在线可视化网站集中管理；做课程学习时，也可以把课件文件夹、笔记软件、教材 PDF、网课链接、翻译工具和常用检索网站整理成一个「学习」工作区。这样一来，我们便不需要在大量应用、网页和文件之间反复查找，只需要通过搜索、分类、收藏或标签快速进入对应任务环境。
+**A local-first resource workspace for Windows.**
 
-使用 OrbitStart 后，电脑中的数字资源会从零散的入口变成有组织的工作流。无论是学习、剪辑、开发、科研、办公还是资料管理，用户都可以更快找到需要的工具和内容，减少重复切换和查找成本，让日常操作更加集中、高效、顺畅和可控。
+把应用、文件夹、网址、脚本、书签、工作区和动作入口收进一个本地启动工作台。
 
-## 当前状态
+![Version](https://img.shields.io/badge/version-0.4.8-2f81f7)
+![Platform](https://img.shields.io/badge/platform-Windows-0078d4)
+![Built with Tauri](https://img.shields.io/badge/Tauri-2.x-24c8db)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-当前版本：`0.4.5`
+**Release 下载** · **本地优先** · **多主题** · **插件雏形** · **Windows 桌面外壳**
 
-OrbitStart 目前是一个基于 Tauri 2、React 18、TypeScript 和 SQLite 的 Windows 桌面应用。核心功能已经可用，插件系统和主题系统处于早期可扩展阶段，适合继续迭代为个人启动器、工作流入口或本地效率工具。
+</div>
 
-## 主要功能
+---
 
-- 资源中心：管理应用、网址、文件、文件夹、工作区、脚本和动作链。
-- 快速搜索：通过名称、路径、别名、标签和插件结果查找资源。
-- 标签分组：内置应用、工作区、网址、脚本、插件分组，并支持自定义分组。
-- 收藏与统计：支持收藏资源、启动次数和最近启动时间记录。
-- 批量管理：批量选择资源后移动分组或删除。
-- 拖拽创建：将桌面快捷方式、文件、文件夹或脚本拖入窗口即可创建资源。
-- Windows 扫描：扫描桌面和开始菜单快捷方式，并尽量提取真实应用图标。
-- 浏览器书签导入：支持从 Edge/Chrome 书签文件导入网址资源。
-- 动作链：一个入口按顺序启动多个应用、文件夹或网页。
-- 插件管理：查看插件清单、权限、状态、详情，并可启用或停用插件。
-- 主题工作室：内置多套主题，默认主题为 Local Galaxy，并支持主题 token 扩展。
-- 桌面外壳：自定义标题栏、托盘菜单、全局快捷键、右键菜单和外部链接拦截。
-- 数据备份：导出或导入本地 JSON 备份。
+## Screenshot Placeholders
 
-## 技术栈
+> 后续截图可以放到 `docs/images/`，再把下面的占位替换成真实图片。
 
-- 桌面框架：Tauri 2
-- 前端：React 18、TypeScript、Vite
-- 本地存储：SQLite，运行时数据位于 `%APPDATA%\OrbitStart`
-- 图标：Lucide React 和本地提取的应用图标
-- 自动化测试：Playwright
+<!--
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="OrbitStart dashboard" width="900" />
+</p>
+-->
 
-## 项目结构
+<!--
+<p align="center">
+  <img src="docs/images/theme-studio.png" alt="OrbitStart theme studio" width="900" />
+</p>
+-->
 
-```text
-OrbitStart/
-  src/                    前端应用、桌面外壳、插件 API、主题资源映射
-  src/components/         复用组件
-  src/data/               浏览器预览和内置 catalog 数据
-  src/desktop/            桌面行为：快捷键、右键菜单、窗口控制、外部打开
-  src/lib/                Tauri native 调用封装
-  src/plugin/             插件宿主 API
-  src/theme/              Local Galaxy 资产映射
-  src-tauri/              Tauri/Rust 后端、SQLite、系统托盘、窗口和原生命令
-  design/                 设计文档和 Local Galaxy 工程化素材
-  docs/                   插件、主题和验证文档
-  plugins/                示例插件
-  registry/               插件和主题 registry 示例
-  tests/                  Playwright 和自定义测试
-  themes/                 示例主题包
-  tools/                  开发工具脚本
-```
+<!--
+<p align="center">
+  <img src="docs/images/import-preview.png" alt="OrbitStart import preview" width="900" />
+</p>
+-->
 
-## 运行源码
+## What Is OrbitStart?
 
-环境要求：
+OrbitStart 是一个面向 Windows 的本地资源工作台。它不是单纯的应用启动器，也不是浏览器书签管理器，而是把日常工作里分散的入口统一成一个可搜索、可分组、可收藏、可导入、可主题化的资源中心。
 
-- Windows 10/11
-- Node.js 18 或更高版本
-- Rust stable
-- Tauri 2 所需的 Windows WebView2 运行环境
+你可以把它理解成一个个人数字资源台：
 
-安装依赖：
+- 常用软件：微信、浏览器、VS Code、Photoshop、Excel。
+- 本地文件：项目文件夹、数据目录、论文目录、素材库。
+- 在线入口：GitHub、ChatGPT、控制台、课程链接、文档网站。
+- 自动化入口：PowerShell、Python、批处理脚本。
+- 工作区入口：一个动作链按顺序打开多个应用、文件夹和网页。
 
-```powershell
-npm.cmd install
-```
+## Why It Exists
 
-启动前端开发服务器：
+Windows 桌面、开始菜单、浏览器书签和文件夹各自解决了一部分入口问题，但长期使用后资源会变得分散。OrbitStart 尝试解决的是这些问题：
 
-```powershell
-npm.cmd run dev
-```
+- 桌面快捷方式越来越乱。
+- 浏览器书签只能管理网页，不能管理本地应用和文件。
+- 普通启动器偏搜索，不一定适合长期整理工作流。
+- 不同任务场景需要不同资源组合，例如剪辑、科研、学习、开发、数据分析。
+- 常用入口需要启动记录、收藏、标签和导入备份，而不只是一个快捷方式。
 
-启动 Tauri 桌面应用：
+## Download
 
-```powershell
-npm.cmd run tauri:dev
-```
+OrbitStart 面向普通用户的使用方式是从 **GitHub Releases** 下载 Windows 安装包。
 
-## 构建
+1. 打开本仓库的 **Releases** 页面。
+2. 下载最新版安装包，通常命名类似：
 
-```powershell
-npm.cmd run build
-npm.cmd run tauri:build
-```
+   ```text
+   OrbitStart_0.4.8_x64-setup.exe
+   ```
 
-常见构建产物：
+3. 运行安装包并按提示完成安装。
+4. 如果更新时提示无法覆盖 `orbitstart.exe`，先从系统托盘退出旧版 OrbitStart，再重新运行安装包。
 
-```text
-src-tauri\target\release\orbitstart.exe
-src-tauri\target\release\bundle\nsis\OrbitStart_0.4.5_x64-setup.exe
-src-tauri\target\release\bundle\msi\OrbitStart_0.4.5_x64_en-US.msi
-```
+> 普通用户不需要安装 Node.js、Rust、Tauri 或任何开发环境。
 
-### 安装说明
+## Highlights
 
-普通用户只需要下载并运行安装包，不需要安装 Node.js、Rust 或 Tauri 开发环境。发布 Windows GUI 安装包时，优先使用：
+- **Local-first**：资源目录、插件状态、主题设置和备份都保存在本机。
+- **统一资源模型**：应用、文件、文件夹、网址、脚本和动作链使用同一套管理方式。
+- **快速搜索**：按标题、路径、别名、标签、分组和插件结果查找资源。
+- **标签与收藏**：内置分组、自定义分组、星标资源和启动次数统计。
+- **快速导入**：扫描桌面/开始菜单快捷方式，导入 Edge/Chrome 书签。
+- **动作链**：用一个入口顺序打开多个目标。
+- **多主题**：Local Galaxy、Zentou Wireframe、People's Platform、Creative Mode 和 Atelier 系列主题。
+- **桌面化基础**：自定义标题栏、系统托盘、全局快捷键、自定义右键菜单、关闭到托盘。
+- **插件雏形**：manifest-first 插件结构、权限展示、启用/停用、安全模式和日志。
 
-```text
-src-tauri\target\release\bundle\nsis\OrbitStart_0.4.5_x64-setup.exe
-```
+## Product Preview
 
-如果安装时提示 `Error opening file for writing ... orbitstart.exe`，说明安装器无法写入主程序文件，常见原因是旧版 OrbitStart 仍在托盘后台运行、目标目录没有写入权限，或文件被安全软件短暂占用。此时不要点击 `Ignore`，否则安装器会跳过主程序文件，只留下无法启动的快捷方式。请先从系统托盘退出 OrbitStart，或选择默认的当前用户安装目录后重新安装。
+### Resource Workspace
 
-## 测试
+集中管理常用资源，并按真实任务进行整理。
 
-```powershell
-npm.cmd run build
-npm.cmd run test:e2e
-npm.cmd run test:custom
-```
+<!-- screenshot: docs/images/resource-workspace.png -->
 
-如果只做静态验证，至少运行：
+### Theme Studio
 
-```powershell
-npm.cmd run build
-cargo check --manifest-path src-tauri\Cargo.toml
-```
+内置多套主题，支持通过主题 token 切换视觉风格。
 
-## 数据位置
+<!-- screenshot: docs/images/themes.png -->
 
-OrbitStart 采用本地优先策略，默认不会把用户资源上传到远端服务。运行时数据位于：
+### Import Flow
+
+扫描本地程序和浏览器书签，在导入前预览、筛选和排除卸载项。
+
+<!-- screenshot: docs/images/import-flow.png -->
+
+### Desktop Shell
+
+保留桌面软件需要的基本行为：托盘、热键、窗口控制、右键菜单和外部打开。
+
+<!-- screenshot: docs/images/desktop-shell.png -->
+
+## Typical Workflows
+
+**视频剪辑**
+
+把 Premiere Pro、Photoshop、DaVinci Resolve、素材文件夹、字体网站、音效库和项目目录放进同一个剪辑分组。
+
+**编程开发**
+
+把 VS Code、GitHub 仓库、本地项目文件夹、API 文档、本地服务地址和终端脚本集中管理。
+
+**学习与课程**
+
+把课件、教材 PDF、Obsidian 笔记、网课链接、翻译工具和检索网站收进一个学习工作区。
+
+**科研与文献**
+
+把 Zotero、Obsidian Vault、PubMed、Google Scholar、论文文件夹和分析脚本整理到同一入口。
+
+**日常工具中心**
+
+把微信、浏览器、Everything、Clash Verge、ChatGPT 和常用文件夹设为星标资源。
+
+## Data And Privacy
+
+OrbitStart 默认使用本地数据目录：
 
 ```text
 %APPDATA%\OrbitStart
 ```
 
-主要内容：
+主要内容包括：
 
 ```text
 orbit.db        本地 SQLite 数据库
-plugins\        用户本地插件
-themes\         用户本地主题
-backups\        JSON 备份
+plugins\        本地插件目录
+themes\         本地主题目录
+backups\        JSON 备份目录
 ```
 
-## 插件系统
+当前版本没有云同步逻辑。资源数据默认留在用户本机。
 
-插件以 manifest 为中心，目前已稳定的能力包括：
+## Extension Model
 
-- 注册命令
-- 提供搜索结果
-- 显示 toast 反馈
-- 声明权限和贡献项
-- 启用、停用和安全模式隔离
+OrbitStart 的插件系统目前采用 manifest-first 方式：
 
-创建示例插件：
+- 插件通过 `plugin.json` 声明名称、版本、权限和贡献能力。
+- 插件可在插件管理页启用或停用。
+- 安全模式会临时禁用第三方本地插件。
+- 插件事件会写入本地日志。
 
-```powershell
-npm.cmd run package:plugin -- -PluginPath .\plugins\hello-command
-```
+当前插件系统仍处于早期阶段。它已经具备 manifest、权限、启停和日志等基础结构，但第三方插件隔离运行时、签名验证、完整插件 API 还在后续路线中。
 
-更多说明见：
+## Themes
 
-- `docs\PLUGIN_API.md`
-- `docs\PLUGIN_DEVELOPMENT.md`
+主题通过 CSS tokens 定义颜色、字体、圆角、阴影和状态样式。Local Galaxy 额外使用本地 bitmap 素材构建深空、暗金、青绿高光的桌面视觉层。
 
-## 主题系统
+当前内置主题包括：
 
-主题通过 token 控制界面颜色、字体、圆角、阴影和状态样式。Local Galaxy 主题使用工程化素材映射，非 Local Galaxy 主题优先走纯色和 CSS token，避免素材混用导致视觉污染。
+- Local Galaxy
+- Zentou Wireframe
+- People's Platform
+- Creative Mode
+- Atelier Zero / Charcoal / Mint / Sky / Pink / Grey / Lavender
+- Atelier Rust / Coal / Abyss / Amber
 
-更多说明见：
+## Roadmap
 
-- `docs\THEME_DEVELOPMENT.md`
-- `design\local-galaxy\VISUAL_GUIDE.md`
-- `design\local-galaxy\USAGE_MAP.md`
+- 更强的搜索排序、拼音/缩写/模糊匹配。
+- 更完整的工作区模式和动作链能力。
+- Everything、Obsidian、浏览器 profile 等深度集成。
+- 插件隔离运行时、插件 API 和插件包验证。
+- 更完善的新手引导、示例资源包和主题包分享。
+- 自动更新、签名发布和更完整的 Release channel。
 
-## Git 忽略策略
+## Current Boundaries
 
-仓库应提交源码、文档、示例插件、主题、设计素材和配置文件；不提交以下内容：
+- 当前主要面向 Windows。
+- 插件系统仍偏早期，不能等同于成熟插件生态。
+- Everything 搜索、窗口切换等高级能力目前更接近扩展入口，尚未形成完整原生 provider。
+- 动作链已能顺序打开多个目标，但还没有条件、延时、参数模板或错误恢复。
 
-- `node_modules/`
-- `dist/`
-- `src-tauri/target/`
-- `output/`
-- `.playwright-cli/`
-- 本地日志、stackdump、IDE 配置和 agent 私有目录
+## Tech Snapshot
 
-这些规则已经写入 `.gitignore`。
-
-## 已知边界
-
-- 第三方插件执行隔离仍处于早期阶段，当前更接近 manifest 驱动和宿主 API 原型。
-- Everything 搜索、窗口切换等高级能力已有插件入口，但还没有完整原生 provider。
-- 自动更新、签名和公开 release channel 还未完成。
-- 当前主要面向 Windows，其他平台需要额外适配和测试。
+- Desktop: Tauri 2
+- Frontend: React 18, TypeScript, Vite
+- Storage: SQLite
+- UI icons: lucide-react + extracted local app icons
+- Test tooling: Playwright
+- License: MIT
 
 ## License
 
-OrbitStart 使用 MIT License。详见 `LICENSE`。
+OrbitStart is released under the [MIT License](LICENSE).

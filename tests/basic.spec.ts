@@ -1,5 +1,22 @@
 import { test, expect } from '@playwright/test';
 
+test.use({
+  storageState: {
+    cookies: [],
+    origins: [
+      {
+        origin: 'http://127.0.0.1:1420',
+        localStorage: [
+          {
+            name: 'orbitstart_onboarding_v1',
+            value: JSON.stringify({ completed: true })
+          }
+        ]
+      }
+    ]
+  }
+});
+
 test.describe('OrbitStart E2E Basic Verification', () => {
   test.beforeEach(async ({ page }) => {
     // Navigate to the local Vite dev server

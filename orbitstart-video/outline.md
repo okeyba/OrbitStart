@@ -63,7 +63,7 @@
 
 信息密度：中
 
-素材：`assets/user-supplied/local-import.png`
+素材：`assets/user-supplied/local-import-redacted.png`
 
 作用：展示扫描本地程序与导入前确认，强调从真实使用环境开始。
 
@@ -73,7 +73,7 @@
 
 信息密度：中
 
-素材：`assets/user-supplied/action-chain.png`
+素材：`assets/user-supplied/action-chain-redacted.png`
 
 作用：展示完整资源中心，让应用、网站、文件、脚本变成可整理的入口地图。
 
@@ -93,9 +93,9 @@
 
 信息密度：中
 
-素材：`assets/user-supplied/action-chain.png`
+素材：`assets/user-supplied/action-chain-redacted.png`
 
-作用：把产品从“启动器”推进到“工作流入口”，用节点图解释连续动作。
+作用：把产品从“启动器”推进到“工作流入口”，用节点图和完整资源中心预览解释连续动作。
 
 ### Frame 07：插件与边界
 
@@ -116,7 +116,7 @@
 
 信息密度：中
 
-素材：`assets/screenshots/settings.png`
+素材：`assets/user-supplied/settings-center-manual.png`
 
 作用：说明全局热键、安全模式、关闭行为和主页动作等设置项。
 
@@ -141,7 +141,7 @@
 
 信息密度：中
 
-素材：`assets/screenshots/settings.png`
+素材：`assets/user-supplied/data-backup-redacted.png`
 
 作用：说明数据围绕本地目录组织，并支持导出备份。
 
@@ -151,7 +151,7 @@
 
 信息密度：中
 
-素材：`assets/screenshots/logs.png`
+素材：`assets/user-supplied/runtime-logs.png`
 
 作用：说明日志用于记录引擎事件、扫描结果和系统反馈。
 
@@ -165,10 +165,10 @@
 
 - `assets/generated/orbitstart-orbit-transition.png`
 - `assets/generated/local-galaxy-silk-depth.png`
-- `assets/screenshots/themes/all-themes-contact-sheet.png`
+- `assets/user-supplied/closing-dashboard-full.png`
 - `assets/icon/orbitstart-icon.png`
 
-作用：用品牌图标、多主题和本地工作台概念收束，片尾显示 `OrbitStart 0.4.5`。
+作用：用品牌图标、放大的真实资源中心截图和本地工作台概念收束，片尾显示 `OrbitStart 0.4.5`。
 
 ## 建议时长
 
@@ -193,11 +193,13 @@
 
 - 新图标：`E:\OrbitStart\orbitstart-video\assets\icon\orbitstart-icon.png`
 - 主流程截图：`E:\OrbitStart\orbitstart-video\assets\screenshots\dashboard.png`
-- 本地导入截图：`E:\OrbitStart\orbitstart-video\assets\user-supplied\local-import.png`
-- 动作链/真实资源中心截图：`E:\OrbitStart\orbitstart-video\assets\user-supplied\action-chain.png`
+- 本地导入截图：`E:\OrbitStart\orbitstart-video\assets\user-supplied\local-import-redacted.png`
+- 动作链/真实资源中心截图：`E:\OrbitStart\orbitstart-video\assets\user-supplied\action-chain-redacted.png`
 - 命令面板截图：`E:\OrbitStart\orbitstart-video\assets\screenshots\command-palette.png`
-- 设置截图：`E:\OrbitStart\orbitstart-video\assets\screenshots\settings.png`
-- 日志截图：`E:\OrbitStart\orbitstart-video\assets\screenshots\logs.png`
+- 设置中心截图：`E:\OrbitStart\orbitstart-video\assets\user-supplied\settings-center-manual.png`
+- 本地数据与备份截图：`E:\OrbitStart\orbitstart-video\assets\user-supplied\data-backup-redacted.png`
+- 日志截图：`E:\OrbitStart\orbitstart-video\assets\user-supplied\runtime-logs.png`
+- 片尾真实主界面截图：`E:\OrbitStart\orbitstart-video\assets\user-supplied\closing-dashboard-full.png`
 - 多主题总览：`E:\OrbitStart\orbitstart-video\assets\screenshots\themes\all-themes-contact-sheet.png`
 - 主题缩略墙：`local-galaxy.png`、`atelier-zero.png`、`creative-mode.png`、`atelier-abyss.png`
 - GPT-image 转场图：`E:\OrbitStart\orbitstart-video\assets\generated\orbitstart-orbit-transition.png`
