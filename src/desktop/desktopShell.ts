@@ -31,19 +31,15 @@ function installTauriEventBridge(options: DesktopShellOptions) {
   const attach = async () => {
     try {
       disposers.push(await listen("orbit://focus-search", () => {
-        showAndFocusWindow();
         options.focusSearch();
       }));
       disposers.push(await listen("orbit://open-command-bar", () => {
-        showAndFocusWindow();
         options.openCommandBar();
       }));
       disposers.push(await listen("orbit://open-settings", () => {
-        showAndFocusWindow();
         options.openSettings();
       }));
       disposers.push(await listen("orbit://open-panel", (event) => {
-        showAndFocusWindow();
         options.openPanel(event.payload as string);
       }));
       disposers.push(await listen("orbit://refresh-resources", () => {
@@ -53,7 +49,6 @@ function installTauriEventBridge(options: DesktopShellOptions) {
         void options.toggleSafeMode();
       }));
       disposers.push(await listen("orbit://focus-group", (event) => {
-        showAndFocusWindow();
         options.focusGroup(event.payload as string);
       }));
     } catch {

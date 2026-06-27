@@ -20,13 +20,13 @@ export function editableElementFrom(target: EventTarget | null): HTMLElement | n
 }
 
 export function resourceIdFromTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return null;
-  return target.closest<HTMLElement>("[data-resource-id]")?.dataset.resourceId ?? null;
+  if (!(target instanceof Element)) return null;
+  return target.closest("[data-resource-id]")?.getAttribute("data-resource-id") ?? null;
 }
 
 export function groupIdFromTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return null;
-  return target.closest<HTMLElement>("[data-group-id]")?.dataset.groupId ?? null;
+  if (!(target instanceof Element)) return null;
+  return target.closest("[data-group-id]")?.getAttribute("data-group-id") ?? null;
 }
 
 export function clampedMenuPosition(clientX: number, clientY: number, width = 240, height = 320) {

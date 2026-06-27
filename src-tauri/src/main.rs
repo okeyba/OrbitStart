@@ -43,6 +43,8 @@ struct OrbitItem {
     kind: String,
     group: String,
     target: String,
+    #[serde(default)]
+    arguments: String,
     aliases: Vec<String>,
     tags: Vec<String>,
     icon: String,
@@ -62,6 +64,8 @@ struct OrbitItemInput {
     kind: String,
     group: String,
     target: String,
+    #[serde(default)]
+    arguments: String,
     aliases: Vec<String>,
     tags: Vec<String>,
     icon: String,
@@ -155,6 +159,15 @@ struct AppSettings {
     auto_pinned_mode: bool,
     display_mode: String,
     hotkey_behavior: String,
+    bubble_enabled: bool,
+    bubble_show_when_main_hidden: bool,
+    bubble_always_on_top: bool,
+    bubble_size: i32,
+    bubble_opacity: f64,
+    bubble_snap_to_edge: bool,
+    bubble_expand_on_hover: bool,
+    bubble_expand_delay_ms: i32,
+    bubble_avoid_fullscreen: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -364,6 +377,7 @@ fn init_db(conn: &Connection) -> Result<(), String> {
             kind TEXT NOT NULL,
             group_id TEXT NOT NULL,
             target TEXT NOT NULL UNIQUE,
+            arguments TEXT NOT NULL DEFAULT '',
             aliases_json TEXT NOT NULL,
             tags_json TEXT NOT NULL,
             icon TEXT NOT NULL,
@@ -486,6 +500,13 @@ fn init_db(conn: &Connection) -> Result<(), String> {
     ensure_table_column(
         conn,
         "items",
+        "arguments",
+        "ALTER TABLE items ADD COLUMN arguments TEXT NOT NULL DEFAULT ''",
+    )?;
+
+    ensure_table_column(
+        conn,
+        "items",
         "sort_order",
         "ALTER TABLE items ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
     )?;
@@ -568,6 +589,15 @@ fn ensure_default_settings(conn: &Connection) -> Result<(), String> {
         ("auto_pinned_mode", "false"),
         ("display_mode", "simple"),
         ("hotkey_behavior", "command_bar"),
+        ("bubble_enabled", "false"),
+        ("bubble_show_when_main_hidden", "true"),
+        ("bubble_always_on_top", "true"),
+        ("bubble_size", "64"),
+        ("bubble_opacity", "1.0"),
+        ("bubble_snap_to_edge", "true"),
+        ("bubble_expand_on_hover", "true"),
+        ("bubble_expand_delay_ms", "200"),
+        ("bubble_avoid_fullscreen", "false"),
     ] {
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
@@ -610,6 +640,15 @@ fn app_settings(conn: &Connection) -> Result<AppSettings, String> {
         auto_pinned_mode: setting(conn, "auto_pinned_mode", "false")? == "true",
         display_mode: setting(conn, "display_mode", "simple")?,
         hotkey_behavior: setting(conn, "hotkey_behavior", "command_bar")?,
+        bubble_enabled: setting(conn, "bubble_enabled", "false")? == "true",
+        bubble_show_when_main_hidden: setting(conn, "bubble_show_when_main_hidden", "true")? == "true",
+        bubble_always_on_top: setting(conn, "bubble_always_on_top", "true")? == "true",
+        bubble_size: setting(conn, "bubble_size", "64")?.parse::<i32>().unwrap_or(64),
+        bubble_opacity: setting(conn, "bubble_opacity", "1.0")?.parse::<f64>().unwrap_or(1.0),
+        bubble_snap_to_edge: setting(conn, "bubble_snap_to_edge", "true")? == "true",
+        bubble_expand_on_hover: setting(conn, "bubble_expand_on_hover", "true")? == "true",
+        bubble_expand_delay_ms: setting(conn, "bubble_expand_delay_ms", "200")?.parse::<i32>().unwrap_or(200),
+        bubble_avoid_fullscreen: setting(conn, "bubble_avoid_fullscreen", "false")? == "true",
     })
 }
 
@@ -621,6 +660,7 @@ fn seed_items() -> Vec<OrbitItemInput> {
             kind: "app".to_string(),
             group: "apps".to_string(),
             target: "C:\\Windows\\System32\\notepad.exe".to_string(),
+            arguments: String::new(),
             aliases: vec!["text".to_string(), "txt".to_string(), "notepad".to_string()],
             tags: vec!["system".to_string(), "editor".to_string()],
             icon: "NotebookText".to_string(),
@@ -633,6 +673,7 @@ fn seed_items() -> Vec<OrbitItemInput> {
             kind: "folder".to_string(),
             group: "work".to_string(),
             target: "E:\\OrbitStart".to_string(),
+            arguments: String::new(),
             aliases: vec!["orbit".to_string(), "project".to_string()],
             tags: vec!["project".to_string()],
             icon: "FolderKanban".to_string(),
@@ -645,6 +686,7 @@ fn seed_items() -> Vec<OrbitItemInput> {
             kind: "website".to_string(),
             group: "web".to_string(),
             target: "https://github.com".to_string(),
+            arguments: String::new(),
             aliases: vec!["git".to_string(), "repo".to_string()],
             tags: vec!["web".to_string(), "dev".to_string()],
             icon: "Github".to_string(),
@@ -658,6 +700,7 @@ fn seed_items() -> Vec<OrbitItemInput> {
             group: "work".to_string(),
             target: "C:\\Windows\\System32\\notepad.exe\nhttps://github.com\nE:\\OrbitStart"
                 .to_string(),
+            arguments: String::new(),
             aliases: vec!["chain".to_string(), "workspace".to_string()],
             tags: vec!["automation".to_string(), "template".to_string()],
             icon: "Workflow".to_string(),
@@ -2086,6 +2129,7 @@ fn item_input_from_dropped_path(path_text: &str) -> OrbitItemInput {
         kind: kind.to_string(),
         group: group.to_string(),
         target: path_string,
+        arguments: String::new(),
         aliases,
         tags,
         icon: icon_base64.unwrap_or_else(|| icon.to_string()),
@@ -2156,11 +2200,11 @@ fn insert_item(conn: &Connection, input: &OrbitItemInput) -> Result<OrbitItem, S
     conn.execute(
         r#"
         INSERT OR IGNORE INTO items (
-            id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
+            id, title, subtitle, kind, group_id, target, arguments, aliases_json, tags_json,
             icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at,
             sort_order
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, NULL, ?12, ?12, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items))
         "#,
         params![
             &id,
@@ -2169,6 +2213,7 @@ fn insert_item(conn: &Connection, input: &OrbitItemInput) -> Result<OrbitItem, S
             input.kind,
             group,
             input.target,
+            input.arguments,
             serde_json::to_string(&input.aliases).unwrap_or_else(|_| "[]".to_string()),
             serde_json::to_string(&input.tags).unwrap_or_else(|_| "[]".to_string()),
             input.icon,
@@ -2193,11 +2238,11 @@ fn upsert_scanned_item(conn: &Connection, input: &OrbitItemInput) -> Result<Orbi
     conn.execute(
         r#"
         INSERT INTO items (
-            id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
+            id, title, subtitle, kind, group_id, target, arguments, aliases_json, tags_json,
             icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at,
             sort_order
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, NULL, ?12, ?12, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items))
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             subtitle = excluded.subtitle,
@@ -2206,6 +2251,7 @@ fn upsert_scanned_item(conn: &Connection, input: &OrbitItemInput) -> Result<Orbi
             tags_json = excluded.tags_json,
             icon = excluded.icon,
             accent = excluded.accent,
+            arguments = excluded.arguments,
             updated_at = excluded.updated_at
         "#,
         params![
@@ -2215,6 +2261,7 @@ fn upsert_scanned_item(conn: &Connection, input: &OrbitItemInput) -> Result<Orbi
             input.kind,
             group,
             input.target,
+            input.arguments,
             serde_json::to_string(&input.aliases).unwrap_or_else(|_| "[]".to_string()),
             serde_json::to_string(&input.tags).unwrap_or_else(|_| "[]".to_string()),
             input.icon,
@@ -2232,7 +2279,7 @@ fn get_item(conn: &Connection, id: &str) -> Result<Option<OrbitItem>, String> {
     conn.query_row(
         r#"
         SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-               icon, accent, favorite, launch_count, last_launched_at, sort_order
+               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments
         FROM items
         WHERE id = ?1
         "#,
@@ -2247,7 +2294,7 @@ fn get_item_by_target(conn: &Connection, target: &str) -> Result<Option<OrbitIte
     conn.query_row(
         r#"
         SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-               icon, accent, favorite, launch_count, last_launched_at, sort_order
+               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments
         FROM items
         WHERE target = ?1
         "#,
@@ -2290,6 +2337,11 @@ fn merge_existing_item(
     } else {
         existing.accent.clone()
     };
+    let arguments = if update_metadata || existing.arguments.trim().is_empty() {
+        input.arguments.clone()
+    } else {
+        existing.arguments.clone()
+    };
     let group = merge_group_values(&existing.group, &input.group, &kind);
     let aliases = merge_string_lists(&existing.aliases, &input.aliases);
     let tags = merge_string_lists(&existing.tags, &input.tags);
@@ -2307,7 +2359,8 @@ fn merge_existing_item(
             icon = ?8,
             accent = ?9,
             favorite = ?10,
-            updated_at = ?11
+            updated_at = ?11,
+            arguments = ?12
         WHERE id = ?1
         "#,
         params![
@@ -2322,6 +2375,7 @@ fn merge_existing_item(
             accent,
             if favorite { 1 } else { 0 },
             now,
+            arguments,
         ],
     )
     .map_err(|error| format!("Failed to merge existing item labels: {error}"))?;
@@ -2335,6 +2389,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrbitItem> {
     let favorite: i64 = row.get(10)?;
     let launch_count: i64 = row.get(11)?;
     let sort_order: i64 = row.get(13)?;
+    let arguments: String = row.get(14)?;
 
     Ok(OrbitItem {
         id: row.get(0)?,
@@ -2343,6 +2398,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrbitItem> {
         kind: row.get(3)?,
         group: row.get(4)?,
         target: row.get(5)?,
+        arguments,
         aliases: serde_json::from_str(&aliases_json).unwrap_or_default(),
         tags: serde_json::from_str(&tags_json).unwrap_or_default(),
         icon: row.get(8)?,
@@ -2359,7 +2415,7 @@ fn all_items(conn: &Connection) -> Result<Vec<OrbitItem>, String> {
         .prepare(
             r#"
             SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-                   icon, accent, favorite, launch_count, last_launched_at, sort_order
+                   icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments
             FROM items
             ORDER BY sort_order ASC, title COLLATE NOCASE ASC
             "#,
@@ -4148,7 +4204,8 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
             favorite = ?11,
             launch_count = ?12,
             last_launched_at = ?13,
-            updated_at = ?14
+            updated_at = ?14,
+            arguments = ?15
         WHERE id = ?1
         "#,
         params![
@@ -4166,6 +4223,7 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
             item.launch_count,
             item.last_launched_at,
             now,
+            item.arguments,
         ],
     )
     .map_err(|error| format!("Failed to update item: {error}"))?;
@@ -4192,7 +4250,11 @@ fn launch_item(app: tauri::AppHandle, id: String) -> Result<String, String> {
     if item.kind == "action_chain" {
         launch_action_chain(&item.target)?;
     } else {
-        launch_target(item.target.clone())?;
+        if !item.arguments.trim().is_empty() {
+            launch_executable_with_args(&item.target, &item.arguments)?;
+        } else {
+            launch_target(item.target.clone())?;
+        }
     }
     let now = now_string();
     let settings = app_settings(&conn)?;
@@ -4229,6 +4291,87 @@ fn launch_action_chain(targets: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn to_wide_chars(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: *mut std::ffi::c_void,
+        lpOperation: *const u16,
+        lpFile: *const u16,
+        lpParameters: *const u16,
+        lpDirectory: *const u16,
+        nShowCmd: i32,
+    ) -> *mut std::ffi::c_void;
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_lnk_target(lnk_path: &str) -> Option<String> {
+    use lnk::ShellLink;
+    let shortcut = ShellLink::open(lnk_path).ok()?;
+    if let Some(info) = shortcut.link_info() {
+        if let Some(path) = info.local_base_path() {
+            return Some(path.clone());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn win_shell_execute(target: &str, args: Option<&str>) -> Result<(), String> {
+    let mut target_to_run = target.to_string();
+    if target.to_lowercase().ends_with(".lnk") {
+        if let Some(resolved) = resolve_lnk_target(target) {
+            if !resolved.trim().is_empty() {
+                target_to_run = resolved;
+            }
+        }
+    }
+
+    let target_wide = to_wide_chars(&target_to_run);
+    let operation_wide = to_wide_chars("open");
+    
+    let args_wide = args.map(to_wide_chars);
+    let args_ptr = match &args_wide {
+        Some(w) => w.as_ptr(),
+        None => std::ptr::null(),
+    };
+    
+    let parent_dir = std::path::Path::new(&target_to_run).parent();
+    let dir_wide = parent_dir
+        .filter(|p| p.exists() && p.is_dir())
+        .and_then(|p| p.to_str())
+        .map(to_wide_chars);
+    let dir_ptr = match &dir_wide {
+        Some(w) => w.as_ptr(),
+        None => std::ptr::null(),
+    };
+
+    unsafe {
+        let result = ShellExecuteW(
+            std::ptr::null_mut(),
+            operation_wide.as_ptr(),
+            target_wide.as_ptr(),
+            args_ptr,
+            dir_ptr,
+            1, // SW_SHOWNORMAL
+        );
+        let status = result as usize;
+        if status <= 32 {
+            return Err(format!("启动失败，Windows 错误代码：{}", status));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn launch_target(target: String) -> Result<String, String> {
     if target.starts_with("orbit://") {
@@ -4237,23 +4380,8 @@ fn launch_target(target: String) -> Result<String, String> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut command = if target.starts_with("http://")
-            || target.starts_with("https://")
-            || target.contains("://")
-        {
-            let mut cmd = ProcessCommand::new("rundll32.exe");
-            cmd.arg("url.dll,FileProtocolHandler").arg(&target);
-            cmd
-        } else {
-            let mut cmd = ProcessCommand::new("explorer.exe");
-            cmd.arg(&target);
-            cmd
-        };
-
-        command
-            .spawn()
-            .map_err(|error| format!("启动失败：{error}"))?;
-        Ok(format!("已启动：{target}"))
+        win_shell_execute(&target, None)?;
+        Ok(format!("已启动：{}", target))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -4261,6 +4389,19 @@ fn launch_target(target: String) -> Result<String, String> {
         Err(format!(
             "Launching is currently implemented on Windows only: {target}"
         ))
+    }
+}
+
+fn launch_executable_with_args(target: &str, args_str: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        win_shell_execute(target, Some(args_str))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (target, args_str);
+        Err("Launching with arguments is supported on Windows only".to_string())
     }
 }
 
@@ -4340,6 +4481,7 @@ fn scan_dir_for_shortcuts(path: &Path, out: &mut Vec<OrbitItemInput>) {
             kind: "app".to_string(),
             group: "apps".to_string(),
             target,
+            arguments: String::new(),
             aliases: vec![],
             tags: vec!["shortcut".to_string(), "scan".to_string()],
             icon: "AppWindow".to_string(),
@@ -4460,6 +4602,7 @@ $items = foreach ($root in $roots) {
                 kind: "app".to_string(),
                 group: "apps".to_string(),
                 target: shortcut.shortcut,
+                arguments: shortcut.arguments.clone(),
                 aliases: vec![shortcut.target_path, shortcut.working_directory]
                     .into_iter()
                     .filter(|value| !value.trim().is_empty())
@@ -4521,6 +4664,7 @@ fn collect_bookmarks(node: &serde_json::Value, out: &mut Vec<OrbitItemInput>) {
             kind: "website".to_string(),
             group: "web".to_string(),
             target: url.to_string(),
+            arguments: String::new(),
             aliases: vec![title.to_string()],
             tags: vec!["bookmark".to_string(), "browser".to_string()],
             icon: "Globe".to_string(),
@@ -4792,6 +4936,7 @@ fn import_catalog_json(app: tauri::AppHandle, json: String) -> Result<Vec<OrbitI
             kind: item.kind,
             group: item.group,
             target: item.target,
+            arguments: item.arguments,
             aliases: item.aliases,
             tags: item.tags,
             icon: item.icon,
@@ -5549,7 +5694,120 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
 }
 
 #[cfg(desktop)]
+#[cfg(desktop)]
+fn is_bubble_enabled_and_show_on_hide() -> bool {
+    if let Ok(conn) = open_db() {
+        let enabled = setting(&conn, "bubble_enabled", "false").unwrap_or_default() == "true";
+        let show_on_hide = setting(&conn, "bubble_show_when_main_hidden", "true").unwrap_or_default() == "true";
+        enabled && show_on_hide
+    } else {
+        false
+    }
+}
+
+#[cfg(desktop)]
+fn create_bubble_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(bubble) = app.get_webview_window("floating-bubble") {
+        return Ok(bubble);
+    }
+    let conn = open_db()?;
+    let always_on_top = setting(&conn, "bubble_always_on_top", "true").unwrap_or_default() == "true";
+    
+    let url = WebviewUrl::App("index.html".into());
+    let bubble = WebviewWindowBuilder::new(app, "floating-bubble", url)
+        .title("OrbitStart Bubble")
+        .inner_size(380.0, 120.0)
+        .decorations(false)
+        .resizable(false)
+        .transparent(true)
+        .always_on_top(always_on_top)
+        .skip_taskbar(true)
+        .visible(true)
+        .build()
+        .map_err(|error| format!("Failed to create bubble window: {error}"))?;
+        
+    Ok(bubble)
+}
+
+#[cfg(desktop)]
+fn show_bubble_window(app: &tauri::AppHandle) {
+    if let Some(bubble) = app.get_webview_window("floating-bubble") {
+        let _ = bubble.show();
+        let _ = bubble.unminimize();
+        let _ = bubble.set_focus();
+    } else if let Ok(bubble) = create_bubble_window(app) {
+        let _ = bubble.show();
+        let _ = bubble.unminimize();
+        let _ = bubble.set_focus();
+    }
+}
+
+#[cfg(desktop)]
+fn hide_bubble_window(app: &tauri::AppHandle) {
+    if let Some(bubble) = app.get_webview_window("floating-bubble") {
+        let _ = bubble.close();
+    }
+}
+
+#[tauri::command]
+fn open_bubble_window(app: tauri::AppHandle) -> Result<(), String> {
+    show_bubble_window(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn log_frontend_error(message: String) {
+    eprintln!("FRONTEND ERROR: {}", message);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("frontend_errors.log")
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{}", message);
+    }
+}
+
+#[tauri::command]
+fn enter_floating_mode(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    show_bubble_window(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn exit_floating_mode_and_show_main(app: tauri::AppHandle, action: Option<String>) -> Result<(), String> {
+    hide_bubble_window(&app);
+    show_and_focus_main(&app);
+    if let Some(main) = app.get_webview_window("main") {
+        if let Some(act) = action {
+            let _ = main.emit("orbit://bubble-action", act);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_bubble_setting(app: tauri::AppHandle, key: String, value: String) -> Result<CatalogSnapshot, String> {
+    let conn = open_db()?;
+    set_setting_value(&conn, &key, &value)?;
+    
+    // Apply immediately to bubble window if it exists
+    if let Some(bubble) = app.get_webview_window("floating-bubble") {
+        if key == "bubble_always_on_top" {
+            let _ = bubble.set_always_on_top(value == "true");
+        }
+    }
+    
+    let _ = app.emit("orbit://refresh-resources", ());
+    catalog_snapshot()
+}
+
+#[cfg(desktop)]
 fn show_and_focus_main(app: &tauri::AppHandle) {
+    hide_bubble_window(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -5579,7 +5837,11 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false) {
             let _ = window.hide();
+            if is_bubble_enabled_and_show_on_hide() {
+                show_bubble_window(app);
+            }
         } else {
+            hide_bubble_window(app);
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
@@ -5603,11 +5865,15 @@ fn handle_main_window_close(window: &tauri::Window, event: &WindowEvent) {
         window.app_handle().exit(0);
     } else {
         let _ = window.hide();
+        if is_bubble_enabled_and_show_on_hide() {
+            show_bubble_window(window.app_handle());
+        }
     }
 }
 
 #[cfg(desktop)]
 fn show_navigate_to_group(app: &tauri::AppHandle, group_id: &str) {
+    hide_bubble_window(app);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -5739,6 +6005,7 @@ fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            log_frontend_error,
             catalog_snapshot,
             create_item,
             reorder_items,
@@ -5798,7 +6065,11 @@ pub fn run() {
             open_data_directory,
             open_aux_window,
             get_autostart_enabled,
-            set_autostart_enabled
+            set_autostart_enabled,
+            open_bubble_window,
+            enter_floating_mode,
+            exit_floating_mode_and_show_main,
+            set_bubble_setting
         ])
         .setup(|app| {
             let _ = open_db();

@@ -7,6 +7,7 @@ export interface OrbitItem {
   kind: ItemKind;
   group: string;
   target: string;
+  arguments?: string;
   aliases: string[];
   tags: string[];
   icon: string;
@@ -23,6 +24,7 @@ export interface OrbitItemInput {
   kind: ItemKind;
   group: string;
   target: string;
+  arguments?: string;
   aliases: string[];
   tags: string[];
   icon: string;
@@ -219,6 +221,15 @@ export interface AppSettings {
   autoPinnedMode: boolean;
   displayMode: "simple" | "detailed" | string;
   hotkeyBehavior: "command_bar" | "open_only" | string;
+  bubbleEnabled: boolean;
+  bubbleShowWhenMainHidden: boolean;
+  bubbleAlwaysOnTop: boolean;
+  bubbleSize: number;
+  bubbleOpacity: number;
+  bubbleSnapToEdge: boolean;
+  bubbleExpandOnHover: boolean;
+  bubbleExpandDelayMs: number;
+  bubbleAvoidFullscreen: boolean;
 }
 
 export interface SearchResult {
@@ -229,6 +240,7 @@ export interface SearchResult {
   source: string;
   actionLabel: string;
   run: () => void | Promise<void>;
+  resourceId?: string;
 }
 
 export interface Phase0Snapshot {

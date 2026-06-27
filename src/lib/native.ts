@@ -1041,3 +1041,36 @@ export async function updateGroupHotkey(groupId: string, hotkey: string | null):
     window.localStorage.setItem("orbitstart.browser.group_hotkeys", JSON.stringify(map));
   }
 }
+
+export async function setBubbleSetting(key: string, value: string): Promise<Phase0Snapshot> {
+  try {
+    return await invokeNative<Phase0Snapshot>("set_bubble_setting", { key, value });
+  } catch {
+    const snapshot = readBrowserSnapshot();
+    const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    const parsedValue = value === "true" ? true : value === "false" ? false : isNaN(Number(value)) ? value : Number(value);
+    const next = {
+      ...snapshot,
+      settings: { ...snapshot.settings, [camelKey]: parsedValue }
+    };
+    writeBrowserSnapshot(next);
+    return next;
+  }
+}
+
+export async function enterFloatingMode(): Promise<void> {
+  try {
+    await invokeNative<void>("enter_floating_mode");
+  } catch {
+    console.log("Mock enter floating mode");
+  }
+}
+
+export async function exitFloatingModeAndShowMain(action?: string): Promise<void> {
+  try {
+    await invokeNative<void>("exit_floating_mode_and_show_main", { action });
+  } catch {
+    console.log("Mock exit floating mode and show main with action:", action);
+  }
+}
+

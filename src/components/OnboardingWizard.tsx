@@ -23,7 +23,8 @@ import {
   selectTemplate,
   markShortcutScanDone,
   markBookmarkScanDone,
-  areBothScansDone
+  areBothScansDone,
+  loadOnboardingState
 } from "../lib/onboarding";
 
 interface OnboardingWizardProps {
@@ -35,6 +36,8 @@ interface OnboardingWizardProps {
   onScanBookmarks: () => void | Promise<void>;
   /** Called when onboarding is fully completed or skipped. */
   onComplete: () => void;
+  /** Whether the wizard is visible or hidden (e.g. during manual import filtering) */
+  visible?: boolean;
 }
 
 /**
@@ -50,9 +53,10 @@ export function OnboardingWizard({
   onTemplateSelected,
   onScanShortcuts,
   onScanBookmarks,
-  onComplete
+  onComplete,
+  visible = true
 }: OnboardingWizardProps) {
-  const [state, setState] = useState<OnboardingState>(DEFAULT_ONBOARDING_STATE);
+  const [state, setState] = useState<OnboardingState>(() => loadOnboardingState() ?? DEFAULT_ONBOARDING_STATE);
   const [isTransitioning, setIsTransitioning] = useState(false);
 
   /** Navigate to next step with transition animation */
@@ -110,7 +114,12 @@ export function OnboardingWizard({
   const bothDone = areBothScansDone(state);
 
   return (
-    <section className="onboarding-backdrop" role="dialog" aria-modal="true">
+    <section
+      className="onboarding-backdrop"
+      role="dialog"
+      aria-modal="true"
+      style={{ display: visible === false ? "none" : "flex" }}
+    >
       <div className={`onboarding-wizard ${isTransitioning ? "transitioning" : ""}`}>
         {/* Header — always visible */}
         <div className="onboarding-header">

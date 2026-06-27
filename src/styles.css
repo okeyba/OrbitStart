@@ -7489,3 +7489,10 @@ input.recording {
   border-style: dashed !important;
   opacity: 0.5 !important;
 }
+
+/* Floating Bubble Window Transparency Override */
+html.bubble-html,
+body.bubble-body,
+body.bubble-body #root {
+  background: transparent !important;
+}

@@ -1,7 +1,7 @@
 import { launchTarget } from "../lib/native";
 
 function anchorFrom(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return null;
+  if (!(target instanceof Element)) return null;
   return target.closest<HTMLAnchorElement>("a[href]");
 }
 

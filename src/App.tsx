@@ -128,8 +128,11 @@ import {
   reorderItems,
   reorderGroups,
   getGroupHotkeys,
-  updateGroupHotkey
+  updateGroupHotkey,
+  enterFloatingMode,
+  setBubbleSetting
 } from "./lib/native";
+import { FloatingBubble } from "./components/FloatingBubble/FloatingBubble";
 import { createOrbitPluginHost } from "./plugin/api";
 import { localGalaxyAssets } from "./theme/localGalaxyAssets";
 import type {
@@ -385,6 +388,7 @@ function makeEmptyInput(kind: ItemKind = "app"): OrbitItemInput {
     kind,
     group: option.group,
     target: "",
+    arguments: "",
     aliases: [],
     tags: [],
     icon: option.icon,
@@ -453,6 +457,7 @@ function inputFromItem(item: OrbitItem): OrbitItemInput {
     kind: item.kind,
     group: item.group,
     target: item.target,
+    arguments: item.arguments ?? "",
     aliases: item.aliases,
     tags: item.tags,
     icon: item.icon,
@@ -723,11 +728,115 @@ function SortableResourceRow({
   );
 }
 
+function FloatingBubbleWrapper() {
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+
+  useEffect(() => {
+    loadSnapshot()
+      .then((snap) => setSettings(snap.settings))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.add("bubble-body");
+    document.documentElement.classList.add("bubble-html");
+    return () => {
+      document.body.classList.remove("bubble-body");
+      document.documentElement.classList.remove("bubble-html");
+    };
+  }, []);
+
+  const [themes, setThemes] = useState<ThemeManifest[]>([]);
+  useEffect(() => {
+    loadSnapshot().then((snap) => setThemes(snap.themes)).catch(console.error);
+  }, []);
+
+  const activeTheme = useMemo(() => {
+    return themes.find((theme) => theme.id === settings?.activeThemeId) ?? themes[0];
+  }, [settings?.activeThemeId, themes]);
+
+  useEffect(() => {
+    if (!activeTheme) return;
+    const root = document.documentElement;
+    root.dataset.theme = activeTheme.id;
+    if (activeTheme.id.startsWith("atelier-")) {
+      root.dataset.themeStyle = "atelier";
+    } else {
+      delete root.dataset.themeStyle;
+    }
+    Object.entries(activeTheme.tokens).forEach(([key, value]) => root.style.setProperty(key, value));
+  }, [activeTheme]);
+
+  return <FloatingBubble settings={settings} />;
+}
+
 export default function App() {
-  const auxPanel = useMemo(getAuxPanel, []);
+  const [windowLabel, setWindowLabel] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      setWindowLabel("main");
+      return;
+    }
+    
+    let active = true;
+    const check = () => {
+      try {
+        const win = getAppWindow();
+        if (win?.label) {
+          if (active) setWindowLabel(win.label);
+        } else {
+          if (active) setTimeout(check, 16);
+        }
+      } catch {
+        if (active) setTimeout(check, 16);
+      }
+    };
+    check();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (windowLabel === null) {
+    return null; // Transparent loading state
+  }
+
+  if (windowLabel === "floating-bubble") {
+    return <FloatingBubbleWrapper />;
+  }
+
+  return <MainApp windowLabel={windowLabel} />;
+}
+
+interface MainAppProps {
+  windowLabel: string;
+}
+
+export function MainApp({ windowLabel }: MainAppProps) {
+  const auxPanel = useMemo(() => {
+    const panel = new URLSearchParams(window.location.search).get("panel");
+    if (panel === "settings" || panel === "plugins" || panel === "themes" || panel === "about") return panel;
+    return windowLabel === "settings" || windowLabel === "plugins" || windowLabel === "themes" || windowLabel === "about" ? windowLabel : null;
+  }, [windowLabel]);
+
   const isAuxWindow = Boolean(auxPanel);
-  const initialTodoPanelPayload = useMemo(getTodoPanelPayload, []);
+
+  const initialTodoPanelPayload = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    const panel = params.get("panel");
+    if (panel !== "todo" && windowLabel !== "todo-panel") return null;
+    return {
+      noteId: params.get("noteId") ?? "",
+      vaultId: params.get("vaultId") ?? undefined,
+      vaultName: params.get("vaultName") ?? undefined,
+      relativePath: params.get("relativePath") ?? undefined,
+      title: params.get("title") ?? undefined
+    };
+  }, [windowLabel]);
+
   const isTodoPanelWindow = Boolean(initialTodoPanelPayload);
+  const isBubbleWindow = false;
   const [items, setItems] = useState<OrbitItem[]>([]);
   const [localOrder, setLocalOrder] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -791,6 +900,7 @@ export default function App() {
     items: OrbitItemInput[];
     selectedIndices: Set<number>;
     searchQuery: string;
+    onClose?: () => void;
   } | null>(null);
   const [pluginHostRevision, setPluginHostRevision] = useState(0);
   const paletteInputRef = useRef<HTMLInputElement>(null);
@@ -956,7 +1066,7 @@ export default function App() {
         });
       } else {
         if (manual) {
-          setToast("当前已是最新版本 (v0.6.0)");
+          setToast("当前已是最新版本 (v0.6.2)");
         }
       }
     } catch (err) {
@@ -1037,6 +1147,16 @@ export default function App() {
       document.body.classList.remove("aux-body");
     }
   }, [isAuxWindow]);
+
+  useEffect(() => {
+    if (isBubbleWindow) {
+      document.body.classList.add("bubble-body");
+      document.documentElement.classList.add("bubble-html");
+    } else {
+      document.body.classList.remove("bubble-body");
+      document.documentElement.classList.remove("bubble-html");
+    }
+  }, [isBubbleWindow]);
 
   useEffect(() => {
     setLocalOrder(items.map((item) => item.id));
@@ -1290,6 +1410,49 @@ export default function App() {
       unlisten?.();
     };
   }, [isTodoPanelWindow]);
+
+  useEffect(() => {
+    if (isTodoPanelWindow || isAuxWindow || isBubbleWindow || !isTauriRuntime()) return;
+    
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    
+    import("@tauri-apps/api/event")
+      .then(({ listen }) => listen<string>("orbit://bubble-action", (event) => {
+        const action = event.payload;
+        if (action === "search") {
+          setActiveView("dashboard");
+          setActiveGroup("all");
+          setQuery("");
+          requestAnimationFrame(() => searchInputRef.current?.focus());
+        } else if (action === "add-resource") {
+          setActiveView("dashboard");
+          setEditor({ mode: "create", input: makeEmptyInput() });
+        } else if (action === "workspace") {
+          setActiveView("dashboard");
+          setActiveGroup("all");
+        } else if (action === "recent") {
+          setActiveView("dashboard");
+          setActiveGroup("all");
+          setQuery("");
+        } else if (action === "settings") {
+          void openPanelWindow("settings");
+        }
+      }))
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch((err) => console.error("Failed to setup bubble action listener", err));
+      
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isTodoPanelWindow, isAuxWindow, isBubbleWindow]);
 
   function focusSearch() {
     setActiveView("dashboard");
@@ -1942,7 +2105,7 @@ export default function App() {
     }
   }
 
-  async function runNativeItemScan(kind: "shortcuts" | "bookmarks") {
+  async function runNativeItemScan(kind: "shortcuts" | "bookmarks", onClose?: () => void) {
     setBusy(true);
     setToast(kind === "shortcuts" ? "正在扫描本地程序..." : "正在读取浏览器书签...");
     try {
@@ -1952,6 +2115,7 @@ export default function App() {
       
       if (scanned.length === 0) {
         setToast("未扫描到任何可用资源");
+        if (onClose) onClose();
         return;
       }
 
@@ -1962,11 +2126,13 @@ export default function App() {
         kind,
         items: scanned,
         selectedIndices,
-        searchQuery: ""
+        searchQuery: "",
+        onClose
       });
       setToast(kind === "shortcuts" ? "本地程序扫描已就绪，请选择导入" : "浏览器书签扫描已就绪，请选择导入");
     } catch (error) {
       setToast(`扫描失败：${String(error)}`);
+      if (onClose) onClose();
     } finally {
       setBusy(false);
     }
@@ -2256,6 +2422,7 @@ export default function App() {
     launchCount?: number;
     favorite?: boolean;
     run: () => void | Promise<void>;
+    resourceId?: string;
   }
 
   function scoreGeneric(title: string, subtitle: string, query: string): number {
@@ -2296,7 +2463,8 @@ export default function App() {
           lastLaunchedAt: item.lastLaunchedAt,
           launchCount: item.launchCount || 0,
           favorite: !!item.favorite,
-          run: () => openItem(item)
+          run: () => openItem(item),
+          resourceId: item.id
         };
       });
 
@@ -2441,7 +2609,8 @@ export default function App() {
         icon: item.icon,
         source: item.kind,
         actionLabel: "打开",
-        run: () => openItem(item)
+        run: () => openItem(item),
+        resourceId: item.id
       }),
       toCommandResult: (command) => ({
         id: command.id,
@@ -3452,6 +3621,159 @@ export default function App() {
           </button>
         </div>
       </div>
+      {isTauriRuntime() && false && (
+        <div className="setting-card">
+          <p className="eyebrow">Desktop Experience</p>
+          <h2>悬浮启动球</h2>
+          <p>控制启动球的启用状态、缩放尺寸、吸附吸力与不透明度。</p>
+          <div className="setting-list">
+            <label className="setting-inline">
+              <input 
+                type="checkbox" 
+                checked={Boolean(settings?.bubbleEnabled)} 
+                onChange={async (e) => {
+                  const snapshot = await setBubbleSetting("bubble_enabled", e.target.checked ? "true" : "false");
+                  setSettings(snapshot.settings);
+                  if (e.target.checked) {
+                    const { invoke } = await import("@tauri-apps/api/core");
+                    await invoke("open_bubble_window");
+                  } else {
+                    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                    try {
+                      const bubble = await WebviewWindow.getByLabel("floating-bubble");
+                      if (bubble) await bubble.close();
+                    } catch (err) {
+                      // Ignore
+                    }
+                  }
+                }} 
+              />
+              启用悬浮启动球
+            </label>
+            <label className="setting-inline">
+              <input 
+                type="checkbox" 
+                checked={Boolean(settings?.bubbleShowWhenMainHidden)} 
+                onChange={async (e) => {
+                  const snapshot = await setBubbleSetting("bubble_show_when_main_hidden", e.target.checked ? "true" : "false");
+                  setSettings(snapshot.settings);
+                }} 
+              />
+              主窗口隐藏时显示悬浮球
+            </label>
+            <label className="setting-inline">
+              <input 
+                type="checkbox" 
+                checked={Boolean(settings?.bubbleAlwaysOnTop)} 
+                onChange={async (e) => {
+                  const snapshot = await setBubbleSetting("bubble_always_on_top", e.target.checked ? "true" : "false");
+                  setSettings(snapshot.settings);
+                }} 
+              />
+              悬浮球始终置顶
+            </label>
+            <label>
+              悬浮球大小
+              <select 
+                value={settings?.bubbleSize ?? 64} 
+                onChange={async (e) => {
+                  const snapshot = await setBubbleSetting("bubble_size", e.target.value);
+                  setSettings(snapshot.settings);
+                }}
+              >
+                <option value="56">小 (56px)</option>
+                <option value="64">中 (64px)</option>
+                <option value="72">大 (72px)</option>
+              </select>
+            </label>
+            <label className="setting-inline">
+              <input 
+                type="checkbox" 
+                checked={Boolean(settings?.bubbleSnapToEdge)} 
+                onChange={async (e) => {
+                  const snapshot = await setBubbleSetting("bubble_snap_to_edge", e.target.checked ? "true" : "false");
+                  setSettings(snapshot.settings);
+                }} 
+              />
+              靠边吸附
+            </label>
+            <label className="setting-inline">
+              <input 
+                type="checkbox" 
+                checked={Boolean(settings?.bubbleExpandOnHover)} 
+                onChange={async (e) => {
+                  const snapshot = await setBubbleSetting("bubble_expand_on_hover", e.target.checked ? "true" : "false");
+                  setSettings(snapshot.settings);
+                }} 
+              />
+              鼠标悬浮展开快捷小球
+            </label>
+            <label className="setting-inline">
+              <input 
+                type="checkbox" 
+                checked={Boolean(settings?.bubbleAvoidFullscreen)} 
+                onChange={async (e) => {
+                  const snapshot = await setBubbleSetting("bubble_avoid_fullscreen", e.target.checked ? "true" : "false");
+                  setSettings(snapshot.settings);
+                }} 
+              />
+              自动规避全屏应用 (暂定选项)
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                <span>不透明度</span>
+                <span>{Math.round((settings?.bubbleOpacity ?? 1.0) * 100)}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0.1" 
+                max="1.0" 
+                step="0.05"
+                value={settings?.bubbleOpacity ?? 1.0} 
+                onChange={async (e) => {
+                  const snapshot = await setBubbleSetting("bubble_opacity", e.target.value);
+                  setSettings(snapshot.settings);
+                }} 
+              />
+            </label>
+            <button 
+              type="button" 
+              className="wide-command" 
+              onClick={async () => {
+                localStorage.removeItem("orbitstart_bubble_position");
+                localStorage.removeItem("orbitstart_bubble_align");
+                
+                const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                const { LogicalPosition } = await import("@tauri-apps/api/dpi");
+                const { currentMonitor } = await import("@tauri-apps/api/window");
+                try {
+                  const bubble = (await WebviewWindow.getByLabel("floating-bubble")) as any;
+                  if (bubble) {
+                    const monitor = await currentMonitor();
+                    if (monitor) {
+                      const scaleFactor = monitor.scaleFactor;
+                      const monitorX = monitor.position.x / scaleFactor;
+                      const monitorWidth = monitor.size.width / scaleFactor;
+                      const monitorY = monitor.position.y / scaleFactor;
+                      const monitorHeight = monitor.size.height / scaleFactor;
+                      
+                      const defaultX = monitorX + monitorWidth - 380;
+                      const defaultY = monitorY + monitorHeight * 0.7 - 60;
+                      await bubble.setPosition(new LogicalPosition(defaultX, defaultY));
+                      await bubble.emit("orbit://bubble-reset-position", { x: defaultX, y: defaultY });
+                    }
+                  }
+                } catch (err) {
+                  // Ignore
+                }
+                setToast("已重置悬浮球位置");
+              }}
+            >
+              <span>重置悬浮球位置</span>
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 
@@ -3498,7 +3820,7 @@ export default function App() {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.6.0</strong>版本</span>
+          <span><strong>0.6.2</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -4026,6 +4348,13 @@ export default function App() {
     if (!importPreview) return null;
 
     const { kind, items, selectedIndices, searchQuery } = importPreview;
+
+    const handleClose = () => {
+      setImportPreview(null);
+      if (importPreview.onClose) {
+        importPreview.onClose();
+      }
+    };
     
     // 根据搜索框内容过滤出显示的项目列表
     const filteredItemsWithOriginalIndex = items
@@ -4087,7 +4416,7 @@ export default function App() {
         setItems(nextItems);
         await reload();
         setToast(`成功导入 ${selectedItems.length} 个资源`);
-        setImportPreview(null);
+        handleClose();
       } catch (error) {
         setToast(`导入失败：${String(error)}`);
       } finally {
@@ -4098,14 +4427,14 @@ export default function App() {
     const label = kind === "shortcuts" ? "本地程序" : "浏览器书签";
 
     return (
-      <section className="palette-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setImportPreview(null); }}>
+      <section className="palette-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) handleClose(); }}>
         <div className="modal-panel import-preview-panel">
           <div className="modal-head">
             <div>
               <p className="eyebrow">Batch Import</p>
               <h2>批量导入过滤：{label}</h2>
             </div>
-            <button className="icon-action" onClick={() => setImportPreview(null)}>
+            <button className="icon-action" onClick={handleClose}>
               <X size={18} />
             </button>
           </div>
@@ -4176,7 +4505,7 @@ export default function App() {
           </div>
 
           <div className="modal-actions">
-            <button className="secondary-action" onClick={() => setImportPreview(null)} disabled={busy}>
+            <button className="secondary-action" onClick={handleClose} disabled={busy}>
               取消
             </button>
             <button className="primary-action" onClick={handleConfirmImport} disabled={busy || selectedIndices.size === 0}>
@@ -4273,6 +4602,10 @@ export default function App() {
     );
   };
 
+  if (isBubbleWindow) {
+    return <FloatingBubble settings={settings} />;
+  }
+
   if (isTodoPanelWindow) {
     return renderTodoPanelWindow();
   }
@@ -4321,6 +4654,7 @@ export default function App() {
     <>
       {showOnboarding && (
         <OnboardingWizard
+          visible={!importPreview}
           onTemplateSelected={async (tags, groups) => {
             // Resolve current Windows username to replace [user] placeholders in template paths
             const userName = (typeof window !== "undefined" && (window as any).__ORBIT_USER_NAME__) || "";
@@ -4376,7 +4710,9 @@ export default function App() {
             setBusy(true);
             setToast("正在扫描桌面和开始菜单...");
             try {
-              await runNativeItemScan("shortcuts");
+              await new Promise<void>((resolve, reject) => {
+                runNativeItemScan("shortcuts", resolve).catch(reject);
+              });
             } catch (e) {
               setToast(`扫描失败：${String(e)}`);
             } finally {
@@ -4387,7 +4723,9 @@ export default function App() {
             setBusy(true);
             setToast("正在扫描浏览器书签...");
             try {
-              await runNativeItemScan("bookmarks");
+              await new Promise<void>((resolve, reject) => {
+                runNativeItemScan("bookmarks", resolve).catch(reject);
+              });
             } catch (e) {
               setToast(`扫描失败：${String(e)}`);
             } finally {
@@ -4445,17 +4783,17 @@ export default function App() {
           </button>
         </nav>
 
-        <section className="mini-panel">
-          <span>资源</span>
-          <strong>{items.length}</strong>
-        </section>
-
-        <button type="button" className="mini-panel mini-panel-button" onClick={() => void openPanelWindow("plugins")}>
-          <span>插件</span>
-          <strong>
-            {enabledPlugins}/{plugins.length}
-          </strong>
-        </button>
+        {isTauriRuntime() && false && (
+          <button 
+            type="button" 
+            className="mini-panel mini-panel-button bubble-mode-btn" 
+            onClick={() => void enterFloatingMode()}
+            title="进入悬浮启动球模式"
+          >
+            <span>悬浮模式</span>
+            <strong>GO</strong>
+          </button>
+        )}
       </aside>
 
       <section className="workspace">
@@ -4602,6 +4940,7 @@ export default function App() {
                 <button
                   type="button"
                   key={result.id}
+                  data-resource-id={result.resourceId}
                   className={idx === paletteSelectedIndex ? "result-selected" : ""}
                   onClick={async () => {
                     await result.run();
@@ -4664,6 +5003,7 @@ export default function App() {
                 <button
                   type="button"
                   key={result.id}
+                  data-resource-id={result.resourceId}
                   className={idx === commandBarSelectedIndex ? "result-selected" : ""}
                   onClick={async () => {
                     await result.run();
@@ -4753,6 +5093,16 @@ export default function App() {
                   </>
                 )}
               </label>
+              {editor.input.kind !== "action_chain" && (
+                <label className="wide-field">
+                  启动参数 (可选)
+                  <input
+                    value={editor.input.arguments || ""}
+                    onChange={(event) => setEditor({ ...editor, input: { ...editor.input, arguments: event.target.value } })}
+                    placeholder="例如：--portable --no-sandbox"
+                  />
+                </label>
+              )}
               <label className="wide-field">
                 副标题
                 <input

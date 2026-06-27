@@ -945,7 +945,16 @@ export const settings: AppSettings = {
   dataDir: "local-preview",
   autoPinnedMode: false,
   displayMode: "simple",
-  hotkeyBehavior: "command_bar"
+  hotkeyBehavior: "command_bar",
+  bubbleEnabled: false,
+  bubbleShowWhenMainHidden: true,
+  bubbleAlwaysOnTop: true,
+  bubbleSize: 64,
+  bubbleOpacity: 1.0,
+  bubbleSnapToEdge: true,
+  bubbleExpandOnHover: true,
+  bubbleExpandDelayMs: 200,
+  bubbleAvoidFullscreen: false
 };
 
 export const logs: PluginLog[] = [
