@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   Briefcase, Plus, Trash2, Settings, Play, Save, X, Search,
   ArrowUp, ArrowDown, Edit3, Circle, CheckCircle2, 
   AlertCircle, RefreshCw, Check, AppWindow, Globe, FolderOpen, FileText, HelpCircle,
-  TerminalSquare, Workflow
+  TerminalSquare, Workflow, ChevronDown, ChevronUp, Clock, Copy, Clipboard
 } from "lucide-react";
 import type { OrbitItem } from "../../types";
 import { invoke } from "@tauri-apps/api/core";
@@ -118,6 +118,50 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
   const [selectedWindowIndices, setSelectedWindowIndices] = useState<number[]>([]);
   const [windowBindings, setWindowBindings] = useState<{ [index: number]: string }>({});
   const [isRecordingHotkey, setIsRecordingHotkey] = useState(false);
+  const [workspaceContextMenu, setWorkspaceContextMenu] = useState<{ x: number; y: number; workspace: Workspace } | null>(null);
+  const [nodeContextMenu, setNodeContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+  const [copiedStep, setCopiedStep] = useState<Partial<WorkspaceStep> | null>(null);
+  const graphViewportRef = useRef<HTMLDivElement | null>(null);
+  const [expandedStepIds, setExpandedStepIds] = useState<string[]>([]);
+  const [editorViewMode, setEditorViewMode] = useState<"card" | "list" | "graph">("graph");
+  const [graphPanOffset, setGraphPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [graphZoomLevel, setGraphZoomLevel] = useState<number>(1);
+  const [isGraphDragging, setIsGraphDragging] = useState<boolean>(false);
+  const [graphDragStart, setGraphDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isGraphLocked, setIsGraphLocked] = useState<boolean>(false);
+  const [isGraphFullscreen, setIsGraphFullscreen] = useState<boolean>(false);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      setWorkspaceContextMenu(null);
+      setNodeContextMenu(null);
+    };
+    window.addEventListener("click", handleGlobalClick);
+    return () => {
+      window.removeEventListener("click", handleGlobalClick);
+    };
+  }, []);
+
+  useEffect(() => {
+    const viewport = graphViewportRef.current;
+    if (!viewport) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (isGraphLocked) return;
+      const zoomFactor = 0.05;
+      setGraphZoomLevel((prevZoom) => {
+        let nextZoom = prevZoom - e.deltaY * zoomFactor * 0.005;
+        return Math.max(0.3, Math.min(2.0, nextZoom));
+      });
+    };
+
+    viewport.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener("wheel", handleWheel);
+    };
+  }, [isGraphLocked, editingWorkspace, editorViewMode, isGraphFullscreen]);
 
   const loadLogs = () => {
     try {
@@ -220,20 +264,25 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
   };
 
   const handleCreateWorkspace = () => {
-    const newWs: Workspace = {
+    setEditingWorkspace({
       id: "ws_" + Math.random().toString(36).substr(2, 9),
-      name: "新工作区",
-      description: "一键启动开发或办公环境",
+      name: "",
+      description: "",
       icon: "Briefcase",
       color: COLOR_PRESETS[0],
       enabled: true,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      launchCount: 0,
-      preventDuplicate: true
-    };
-    setEditingWorkspace(newWs);
+      launchCount: 0
+    });
     setEditingSteps([]);
+    setExpandedStepIds([]);
+    setEditorViewMode("graph");
+    setGraphPanOffset({ x: 0, y: 0 });
+    setGraphZoomLevel(1);
+    setIsGraphLocked(false);
+    setIsGraphFullscreen(false);
+    setSelectedNodeId(null);
     setIsNew(true);
   };
 
@@ -243,12 +292,182 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
       .filter((s) => s.workspaceId === ws.id)
       .sort((a, b) => a.order - b.order);
     setEditingSteps([...wsSteps]);
+    setExpandedStepIds([]);
+    setEditorViewMode("graph");
+    setGraphPanOffset({ x: 0, y: 0 });
+    setGraphZoomLevel(1);
+    setIsGraphLocked(false);
+    setIsGraphFullscreen(false);
+    setSelectedNodeId(null);
     setIsNew(false);
   };
 
   const handleDeleteWorkspace = (id: string) => {
     setDeleteConfirmId(id);
   };
+
+  const getGraphLayout = () => {
+    interface TreeNode {
+      id: string;
+      step?: WorkspaceStep;
+      children: TreeNode[];
+      width: number;
+      x: number;
+      y: number;
+    }
+
+    const root: TreeNode = { id: "ROOT", children: [], width: 1, x: 0, y: 0 };
+    const nodeMap: { [id: string]: TreeNode } = { ROOT: root };
+
+    editingSteps.forEach((s) => {
+      nodeMap[s.id] = { id: s.id, step: s, children: [], width: 1, x: 0, y: 0 };
+    });
+
+    editingSteps.forEach((s) => {
+      const firstDep = s.dependsOn && s.dependsOn[0];
+      const parentId = (firstDep && nodeMap[firstDep]) ? firstDep : "ROOT";
+      nodeMap[parentId].children.push(nodeMap[s.id]);
+    });
+
+    Object.values(nodeMap).forEach((node) => {
+      node.children.sort((a, b) => (a.step?.order || 0) - (b.step?.order || 0));
+    });
+
+    const calculateNodeWidth = (n: TreeNode): number => {
+      if (n.children.length === 0) {
+        n.width = 1;
+        return 1;
+      }
+      let w = 0;
+      n.children.forEach((c) => {
+        w += calculateNodeWidth(c);
+      });
+      n.width = w;
+      return w;
+    };
+    calculateNodeWidth(root);
+
+    const X_SPACING = 210;
+    const Y_SPACING = 150;
+
+    const assignNodePositions = (n: TreeNode, startX: number, depth: number) => {
+      n.y = depth * Y_SPACING + 60;
+      if (n.children.length === 0) {
+        n.x = startX + X_SPACING / 2;
+      } else if (n.children.length === 1) {
+        const child = n.children[0];
+        assignNodePositions(child, startX, depth + 1);
+        n.x = child.x;
+      } else {
+        let curX = startX;
+        const childXs: number[] = [];
+        n.children.forEach((child) => {
+          assignNodePositions(child, curX, depth + 1);
+          childXs.push(child.x);
+          curX += child.width * X_SPACING;
+        });
+        const minX = Math.min(...childXs);
+        const maxX = Math.max(...childXs);
+        n.x = (minX + maxX) / 2;
+      }
+    };
+    assignNodePositions(root, 0, 0);
+
+    const nodesList: any[] = [];
+    const edgesList: any[] = [];
+
+    Object.values(nodeMap).forEach((n) => {
+      nodesList.push({
+        id: n.id,
+        title: n.id === "ROOT" ? "启动工作区" : (n.step?.title || "未命名"),
+        type: n.id === "ROOT" ? "root" : (n.step?.type || "app"),
+        x: n.x,
+        y: n.y,
+        step: n.step
+      });
+
+      n.children.forEach((c) => {
+        edgesList.push({
+          id: `${n.id}-${c.id}`,
+          fromId: n.id,
+          toId: c.id,
+          px: n.x,
+          py: n.y,
+          cx: c.x,
+          cy: c.y
+        });
+      });
+    });
+
+    return { nodes: nodesList, edges: edgesList };
+  };
+
+  const handleZoomToFit = () => {
+    const { nodes } = getGraphLayout();
+    if (nodes.length === 0) return;
+    const xs = nodes.map(n => n.x);
+    const ys = nodes.map(n => n.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    
+    const graphW = maxX - minX + 220;
+    const graphH = maxY - minY + 150;
+    
+    const canvasW = 550;
+    const canvasH = 360;
+    
+    const scaleX = canvasW / graphW;
+    const scaleY = canvasH / graphH;
+    const newZoom = Math.max(0.5, Math.min(1.2, Math.min(scaleX, scaleY)));
+    
+    const midX = (minX + maxX) / 2;
+    const midY = (minY + maxY) / 2;
+    
+    setGraphZoomLevel(newZoom);
+    setGraphPanOffset({
+      x: 275 - midX * newZoom,
+      y: 160 - midY * newZoom
+    });
+  };
+
+  const handleNodeContextMenu = (e: React.MouseEvent, nodeId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setNodeContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      nodeId
+    });
+  };
+
+  const handleGraphMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isGraphLocked) return;
+    if (e.button !== 0) return;
+    setIsGraphDragging(true);
+    setGraphDragStart({ x: e.clientX - graphPanOffset.x, y: e.clientY - graphPanOffset.y });
+  };
+
+  const handleGraphMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isGraphDragging) return;
+    setGraphPanOffset({
+      x: e.clientX - graphDragStart.x,
+      y: e.clientY - graphDragStart.y
+    });
+  };
+
+  const handleGraphMouseUp = () => {
+    setIsGraphDragging(false);
+  };
+
+  useEffect(() => {
+    if (editorViewMode === "graph") {
+      setTimeout(() => {
+        handleZoomToFit();
+      }, 50);
+    }
+  }, [editorViewMode]);
 
   const handleHotkeyKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     e.preventDefault();
@@ -530,7 +749,7 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
     }
   };
 
-  const handleAddStep = () => {
+  const handleAddStep = (dependsOnId?: string) => {
     if (!editingWorkspace) return;
     const newStep: WorkspaceStep = {
       id: "step_" + Math.random().toString(36).substr(2, 9),
@@ -544,11 +763,13 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
       failurePolicy: "continue",
       enabled: true,
       delayMs: 0,
-      dependsOn: [],
+      dependsOn: dependsOnId ? [dependsOnId] : [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
     setEditingSteps([...editingSteps, newStep]);
+    setExpandedStepIds([...expandedStepIds, newStep.id]);
+    setSelectedNodeId(newStep.id);
   };
 
   const handleUpdateStep = (stepId: string, updates: Partial<WorkspaceStep>) => {
@@ -572,6 +793,102 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
 
   const handleDeleteStep = (stepId: string) => {
     setEditingSteps(editingSteps.filter((s) => s.id !== stepId));
+  };
+
+  const handleCopyNode = (stepId: string) => {
+    const step = editingSteps.find(s => s.id === stepId);
+    if (!step) return;
+    const { id, workspaceId, order, dependsOn, createdAt, updatedAt, ...rest } = step;
+    setCopiedStep(rest);
+  };
+
+  const handlePasteNodeAfter = (targetStepId: string) => {
+    if (!editingWorkspace || !copiedStep) return;
+
+    const newStepId = "step_" + Math.random().toString(36).substr(2, 9);
+    let targetOrder = 0;
+    let newDependsOn: string[] = [];
+
+    if (targetStepId === "ROOT") {
+      targetOrder = 0;
+      newDependsOn = [];
+    } else {
+      const targetStep = editingSteps.find(s => s.id === targetStepId);
+      if (!targetStep) return;
+      targetOrder = targetStep.order;
+      newDependsOn = [targetStepId];
+    }
+
+    const newStep: WorkspaceStep = {
+      id: newStepId,
+      workspaceId: editingWorkspace.id,
+      order: targetOrder + 0.5,
+      type: copiedStep.type || "item",
+      title: copiedStep.title || "粘贴的启动项",
+      target: copiedStep.target || "",
+      arguments: copiedStep.arguments || "",
+      workingDirectory: copiedStep.workingDirectory || "",
+      failurePolicy: copiedStep.failurePolicy || "continue",
+      enabled: copiedStep.enabled !== false,
+      delayMs: copiedStep.delayMs || 0,
+      dependsOn: newDependsOn,
+      scriptConfig: copiedStep.scriptConfig ? { ...copiedStep.scriptConfig } : undefined,
+      waitCondition: copiedStep.waitCondition ? { ...copiedStep.waitCondition } : undefined,
+      windowLayout: copiedStep.windowLayout ? { ...copiedStep.windowLayout } : undefined,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    let updatedSteps = [...editingSteps];
+    if (targetStepId !== "ROOT") {
+      updatedSteps = updatedSteps.map(step => {
+        if (step.dependsOn && step.dependsOn.includes(targetStepId)) {
+          return {
+            ...step,
+            dependsOn: step.dependsOn.map(id => id === targetStepId ? newStepId : id)
+          };
+        }
+        return step;
+      });
+    }
+
+    const allSteps = [...updatedSteps, newStep].sort((a, b) => a.order - b.order);
+    allSteps.forEach((step, idx) => {
+      step.order = idx + 1;
+    });
+
+    setEditingSteps(allSteps);
+    setExpandedStepIds([...expandedStepIds, newStepId]);
+    setSelectedNodeId(newStepId);
+  };
+
+  const handleReplaceNode = (targetStepId: string) => {
+    if (!copiedStep) return;
+    setEditingSteps(prevSteps => prevSteps.map(step => {
+      if (step.id === targetStepId) {
+        return {
+          ...step,
+          type: copiedStep.type || "item",
+          title: copiedStep.title || "替换的启动项",
+          target: copiedStep.target || "",
+          arguments: copiedStep.arguments || "",
+          workingDirectory: copiedStep.workingDirectory || "",
+          failurePolicy: copiedStep.failurePolicy || "continue",
+          enabled: copiedStep.enabled !== false,
+          delayMs: copiedStep.delayMs || 0,
+          scriptConfig: copiedStep.scriptConfig ? { ...copiedStep.scriptConfig } : undefined,
+          waitCondition: copiedStep.waitCondition ? { ...copiedStep.waitCondition } : undefined,
+          windowLayout: copiedStep.windowLayout ? { ...copiedStep.windowLayout } : undefined,
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return step;
+    }));
+    
+    if (selectedNodeId === targetStepId) {
+      setSelectedNodeId(null);
+      setTimeout(() => setSelectedNodeId(targetStepId), 50);
+    }
   };
 
   const handleMoveStep = (index: number, direction: "up" | "down") => {
@@ -775,16 +1092,71 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
               </div>
             </div>
 
-            <div className="steps-section">
-              <div className="steps-header">
-                <h3>启动步骤清单 ({editingSteps.length})</h3>
-                <div style={{ display: "flex", gap: "var(--space-2)" }}>
+            <div className="steps-section" style={{ marginTop: "24px" }}>
+              <div className="steps-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                  <h3 style={{ margin: 0 }}>启动步骤清单 ({editingSteps.length})</h3>
+                  <div style={{ display: "flex", background: "rgba(255,255,255,0.03)", padding: "2px", borderRadius: "8px", border: "1px solid var(--line)" }}>
+                    <button 
+                      type="button" 
+                      onClick={() => setEditorViewMode("graph")}
+                      style={{
+                        background: editorViewMode === "graph" ? "var(--surface-3)" : "none",
+                        border: "none",
+                        borderRadius: "6px",
+                        color: editorViewMode === "graph" ? "var(--text)" : "var(--text-muted)",
+                        padding: "4px 10px",
+                        fontSize: "0.72rem",
+                        cursor: "pointer",
+                        fontWeight: editorViewMode === "graph" ? "bold" : "normal",
+                        transition: "all 0.15s ease"
+                      }}
+                    >
+                      图形模式
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={() => setEditorViewMode("card")}
+                      style={{
+                        background: editorViewMode === "card" ? "var(--surface-3)" : "none",
+                        border: "none",
+                        borderRadius: "6px",
+                        color: editorViewMode === "card" ? "var(--text)" : "var(--text-muted)",
+                        padding: "4px 10px",
+                        fontSize: "0.72rem",
+                        cursor: "pointer",
+                        fontWeight: editorViewMode === "card" ? "bold" : "normal",
+                        transition: "all 0.15s ease"
+                      }}
+                    >
+                      卡片模式
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={() => setEditorViewMode("list")}
+                      style={{
+                        background: editorViewMode === "list" ? "var(--surface-3)" : "none",
+                        border: "none",
+                        borderRadius: "6px",
+                        color: editorViewMode === "list" ? "var(--text)" : "var(--text-muted)",
+                        padding: "4px 10px",
+                        fontSize: "0.72rem",
+                        cursor: "pointer",
+                        fontWeight: editorViewMode === "list" ? "bold" : "normal",
+                        transition: "all 0.15s ease"
+                      }}
+                    >
+                      列表模式
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
                   {editingSteps.length > 0 && (
                     <button type="button" className="secondary-action compact-action" onClick={handleCaptureWindowLayout} title="捕获当前屏幕上所有打开软件的窗口大小与坐标并自动匹配绑定到对应步骤">
                       <AppWindow size={16} /> 自动关联当前窗口位置
                     </button>
                   )}
-                  <button className="primary-action compact-action" onClick={handleAddStep}>
+                  <button className="primary-action compact-action" onClick={() => handleAddStep()}>
                     <Plus size={16} /> 添加步骤
                   </button>
                 </div>
@@ -796,29 +1168,121 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                   <p>暂无启动步骤，点击上方“添加步骤”开始配置</p>
                 </div>
               ) : (
-                <div className="steps-list">
-                  {editingSteps.map((step, index) => (
-                    <div key={step.id} className="step-item glass-card">
-                      <div className="step-drag-handle">
-                        <button 
-                          className="sort-btn" 
-                          disabled={index === 0} 
-                          onClick={() => handleMoveStep(index, "up")}
-                        >
-                          <ArrowUp size={14} />
-                        </button>
-                        <span className="step-number">{index + 1}</span>
-                        <button 
-                          className="sort-btn" 
-                          disabled={index === editingSteps.length - 1} 
-                          onClick={() => handleMoveStep(index, "down")}
-                        >
-                          <ArrowDown size={14} />
-                        </button>
-                      </div>
+                <>
+                  {editorViewMode === "card" && (
+                    <div className="steps-list">
+                  {editingSteps.map((step, index) => {
+                    const isExpanded = expandedStepIds.includes(step.id);
+                    return (
+                      <div key={step.id} className="step-item glass-card" style={{ padding: isExpanded ? "var(--space-4)" : "10px 16px" }}>
+                        <div className="step-drag-handle" style={{ alignSelf: isExpanded ? "flex-start" : "center", marginTop: isExpanded ? "10px" : "0" }}>
+                          <button 
+                            className="sort-btn" 
+                            disabled={index === 0} 
+                            onClick={() => handleMoveStep(index, "up")}
+                          >
+                            <ArrowUp size={14} />
+                          </button>
+                          <span className="step-number">{index + 1}</span>
+                          <button 
+                            className="sort-btn" 
+                            disabled={index === editingSteps.length - 1} 
+                            onClick={() => handleMoveStep(index, "down")}
+                          >
+                            <ArrowDown size={14} />
+                          </button>
+                        </div>
 
-                      <div className="step-config">
-                        <div className="step-resource-select">
+                        {!isExpanded ? (
+                          <div 
+                            className="step-collapsed-summary" 
+                            style={{ display: "flex", alignItems: "center", gap: "12px", width: "100%", cursor: "pointer", minWidth: 0, paddingLeft: "16px" }}
+                            onClick={() => setExpandedStepIds([...expandedStepIds, step.id])}
+                          >
+                            <div className="step-info-badge" style={{ display: "flex", alignItems: "center", gap: "8px", flexGrow: 1, minWidth: 0 }}>
+                              {getStepIcon(step.type)}
+                              <span style={{ fontWeight: "bold", fontSize: "0.85rem", color: "var(--text)", whiteSpace: "nowrap" }}>
+                                {step.title || (step.type === "item" ? "未关联资源" : step.type)}
+                              </span>
+                              <span className="type-tag" style={{ fontSize: "0.7rem", padding: "2px 6px", borderRadius: "4px", background: "var(--surface-3)", color: "var(--text-muted)", flexShrink: 0 }}>
+                                {step.type === "item" ? "已存资源" :
+                                 step.type === "app" ? "应用" :
+                                 step.type === "website" ? "网站" :
+                                 step.type === "folder" ? "文件夹" :
+                                 step.type === "file" ? "文件" :
+                                 step.type === "script" ? "脚本" :
+                                 step.type === "wait" ? "等待" : "未知"}
+                              </span>
+                              {step.target && (
+                                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexGrow: 1, maxWidth: "300px" }}>
+                                  {step.target}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Indicators */}
+                            <div style={{ display: "flex", gap: "8px", alignItems: "center", flexShrink: 0 }}>
+                              {(step.delayMs || 0) > 0 && (
+                                <span title={`延迟: ${step.delayMs}ms`} style={{ fontSize: "0.7rem", color: "var(--gold)", background: "rgba(197,160,89,0.1)", padding: "2px 6px", borderRadius: "4px", display: "flex", alignItems: "center", gap: "3px" }}>
+                                  <Clock size={11} /> {step.delayMs}ms
+                                </span>
+                              )}
+                              {step.windowLayout && (
+                                <span title="窗口位置已捕获" style={{ fontSize: "0.7rem", color: "#37d6bf", background: "rgba(55,214,191,0.1)", padding: "2px 6px", borderRadius: "4px", display: "flex", alignItems: "center", gap: "3px" }}>
+                                  <AppWindow size={11} />
+                                  {step.windowLayout.alwaysOnTop && <span style={{ color: "var(--gold)", fontWeight: "bold" }}>置顶</span>}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Toggle expand / Delete */}
+                            <div style={{ display: "flex", gap: "4px", alignItems: "center", flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                              <button 
+                                type="button" 
+                                className="icon-button" 
+                                title="展开设置"
+                                onClick={() => setExpandedStepIds([...expandedStepIds, step.id])}
+                              >
+                                <ChevronDown size={16} />
+                              </button>
+                              <button 
+                                type="button" 
+                                className="icon-button text-danger" 
+                                title="删除此步骤"
+                                onClick={() => handleDeleteStep(step.id)}
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="step-config" style={{ width: "100%" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)", width: "100%" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                {getStepIcon(step.type)}
+                                <strong style={{ fontSize: "0.9rem" }}>配置步骤 #{index + 1}: {step.title}</strong>
+                              </div>
+                              <div style={{ display: "flex", gap: "4px" }}>
+                                <button 
+                                  type="button" 
+                                  className="icon-button"
+                                  title="收起步骤"
+                                  onClick={() => setExpandedStepIds(expandedStepIds.filter(id => id !== step.id))}
+                                >
+                                  <ChevronUp size={16} />
+                                </button>
+                                <button 
+                                  type="button" 
+                                  className="icon-button text-danger" 
+                                  title="删除"
+                                  onClick={() => handleDeleteStep(step.id)}
+                                >
+                                  <Trash2 size={15} />
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="step-resource-select">
                           <label>步骤类型</label>
                           <div style={{ display: "flex", gap: "var(--space-2)", width: "100%" }}>
                             <select
@@ -1342,10 +1806,957 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                             </div>
                           </div>
                         )}
+                          </div>
+                        )}
                       </div>
+                    );
+                  })}
                     </div>
-                  ))}
-                </div>
+                  )}
+
+                  {editorViewMode === "list" && (
+                    <div className="steps-list-table" style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--radius-md)", overflow: "hidden", marginTop: "var(--space-3)" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem", textAlign: "left" }}>
+                        <thead>
+                          <tr style={{ background: "var(--surface-3)", borderBottom: "1px solid var(--line)", color: "var(--text-muted)" }}>
+                            <th style={{ padding: "10px 12px", width: "40px" }}>#</th>
+                            <th style={{ padding: "10px 12px" }}>标题</th>
+                            <th style={{ padding: "10px 12px", width: "100px" }}>类型</th>
+                            <th style={{ padding: "10px 12px" }}>自定义目标 / 网址 / 脚本</th>
+                            <th style={{ padding: "10px 12px", width: "90px" }}>延迟 (ms)</th>
+                            <th style={{ padding: "10px 12px", width: "100px" }}>置顶状态</th>
+                            <th style={{ padding: "10px 12px", width: "120px", textAlign: "right" }}>操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {editingSteps.map((step, index) => (
+                            <tr key={step.id} style={{ borderBottom: "1px solid var(--line)", color: "var(--text)" }}>
+                              <td style={{ padding: "10px 12px", color: "var(--text-muted)" }}>{index + 1}</td>
+                              <td style={{ padding: "10px 12px", fontWeight: "bold" }}>{step.title}</td>
+                              <td style={{ padding: "10px 12px" }}>
+                                <span className="type-tag" style={{ fontSize: "0.7rem", padding: "2px 6px", borderRadius: "4px", background: "var(--surface-3)", color: "var(--text-muted)" }}>
+                                  {step.type === "item" ? "已存资源" :
+                                   step.type === "app" ? "应用" :
+                                   step.type === "website" ? "网站" :
+                                   step.type === "folder" ? "文件夹" :
+                                   step.type === "file" ? "文件" :
+                                   step.type === "script" ? "脚本" :
+                                   step.type === "wait" ? "等待" : "未知"}
+                                </span>
+                              </td>
+                              <td style={{ padding: "10px 12px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "250px" }}>
+                                {step.type === "script" ? (step.scriptConfig?.useFile ? step.scriptConfig.filePath : "在线脚本内容") : step.target}
+                              </td>
+                              <td style={{ padding: "10px 12px" }}>{step.delayMs || 0}</td>
+                              <td style={{ padding: "10px 12px" }}>
+                                {step.windowLayout?.alwaysOnTop ? (
+                                  <span style={{ color: "var(--gold)" }}>始终置顶</span>
+                                ) : (
+                                  <span style={{ color: "var(--text-muted)" }}>-</span>
+                                )}
+                              </td>
+                              <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                                <div style={{ display: "inline-flex", gap: "8px" }}>
+                                  <button 
+                                    type="button" 
+                                    className="icon-button"
+                                    onClick={() => {
+                                      setExpandedStepIds([...expandedStepIds, step.id]);
+                                      setEditorViewMode("card");
+                                    }}
+                                    title="在卡片模式下展开编辑"
+                                  >
+                                    <Edit3 size={14} />
+                                  </button>
+                                  <button 
+                                    type="button" 
+                                    className="icon-button text-danger"
+                                    onClick={() => handleDeleteStep(step.id)}
+                                    title="删除"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {editorViewMode === "graph" && (() => {
+                    const { nodes, edges } = getGraphLayout();
+                    const selectedNode = nodes.find(n => n.id === selectedNodeId);
+                    
+                    const xs = nodes.map(n => n.x);
+                    const ys = nodes.map(n => n.y);
+                    const minX = xs.length ? Math.min(...xs) - 100 : -100;
+                    const maxX = xs.length ? Math.max(...xs) + 100 : 100;
+                    const minY = ys.length ? Math.min(...ys) - 50 : -50;
+                    const maxY = ys.length ? Math.max(...ys) + 100 : 200;
+                    const boundaryW = maxX - minX;
+                    const boundaryH = maxY - minY;
+
+                    return (
+                      <div 
+                        className={`graph-canvas-container ${isGraphFullscreen ? "fullscreen-graph" : ""}`}
+                        style={isGraphFullscreen ? {
+                          position: "fixed",
+                          left: 0,
+                          top: 0,
+                          width: "100vw",
+                          height: "100vh",
+                          zIndex: 9999,
+                          background: "#080a0f",
+                          padding: "24px",
+                          display: "flex",
+                          flexDirection: "column"
+                        } : {
+                          position: "relative",
+                          width: "100%",
+                          height: "540px",
+                          background: "#080a0f",
+                          borderRadius: "12px",
+                          border: "1px solid var(--line-strong)",
+                          overflow: "hidden",
+                          marginTop: "var(--space-3)"
+                        }}
+                      >
+                        {isGraphFullscreen && (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexShrink: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <Workflow size={20} style={{ color: "var(--gold)" }} />
+                              <h3 style={{ margin: 0, fontSize: "1.1rem" }}>{editingWorkspace?.name} - 拓扑图形编排模式</h3>
+                            </div>
+                            <button 
+                              type="button" 
+                              className="secondary-action compact-action" 
+                              onClick={() => setIsGraphFullscreen(false)}
+                            >
+                              <X size={16} /> 退出全屏
+                            </button>
+                          </div>
+                        )}
+
+                        <div 
+                          className="graph-viewport"
+                          ref={graphViewportRef}
+                          onMouseDown={handleGraphMouseDown}
+                          onMouseMove={handleGraphMouseMove}
+                          onMouseUp={handleGraphMouseUp}
+                          onMouseLeave={handleGraphMouseUp}
+                          style={{
+                            position: "relative",
+                            width: "100%",
+                            height: "100%",
+                            flexGrow: 1,
+                            overflow: "hidden",
+                            cursor: isGraphDragging ? "grabbing" : "grab",
+                            background: "radial-gradient(rgba(255,255,255,0.03) 1px, transparent 0)",
+                            backgroundSize: "24px 24px"
+                          }}
+                        >
+                          <div 
+                            style={{
+                              transform: `translate(${graphPanOffset.x}px, ${graphPanOffset.y}px) scale(${graphZoomLevel})`,
+                              transformOrigin: "0 0",
+                              width: "100%",
+                              height: "100%",
+                              position: "absolute",
+                              left: 0,
+                              top: 0,
+                              pointerEvents: "none"
+                            }}
+                          >
+                            <div style={{ pointerEvents: "auto", position: "relative", width: "1px", height: "1px" }}>
+                              <svg 
+                                style={{
+                                  position: "absolute",
+                                  overflow: "visible",
+                                  pointerEvents: "none",
+                                  left: 0,
+                                  top: 0
+                                }}
+                              >
+                                <defs>
+                                  <filter id="glow-connector" x="-20%" y="-20%" width="140%" height="140%">
+                                    <feGaussianBlur stdDeviation="3" result="blur" />
+                                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                                  </filter>
+                                </defs>
+                                {edges.map(edge => {
+                                  const fromY = edge.py + (edge.fromId === "ROOT" ? 33 : 31);
+                                  const toY = edge.cy - 31;
+                                  const midY = (fromY + toY) / 2;
+                                  const pathD = `M ${edge.px} ${fromY} C ${edge.px} ${midY}, ${edge.cx} ${midY}, ${edge.cx} ${toY}`;
+                                  
+                                  return (
+                                    <g key={edge.id}>
+                                      <path 
+                                        d={pathD}
+                                        fill="none"
+                                        stroke={editingWorkspace?.color || "var(--gold)"}
+                                        strokeWidth={4}
+                                        style={{ opacity: 0.15, filter: "url(#glow-connector)" }}
+                                      />
+                                      <path 
+                                        d={pathD}
+                                        fill="none"
+                                        stroke={editingWorkspace?.color || "var(--gold)"}
+                                        strokeWidth={1.5}
+                                        style={{ opacity: 0.8 }}
+                                      />
+                                      <rect 
+                                        x={edge.px - 3} 
+                                        y={fromY - 3} 
+                                        width={6} 
+                                        height={6} 
+                                        fill="#181e28"
+                                        stroke={editingWorkspace?.color || "var(--gold)"}
+                                        strokeWidth={1}
+                                        transform={`rotate(45 ${edge.px} ${fromY})`}
+                                      />
+                                      <rect 
+                                        x={edge.cx - 3.5} 
+                                        y={toY - 3.5} 
+                                        width={7} 
+                                        height={7} 
+                                        fill={editingWorkspace?.color || "var(--gold)"}
+                                        stroke="#181e28"
+                                        strokeWidth={1.2}
+                                        transform={`rotate(45 ${edge.cx} ${toY})`}
+                                      />
+                                    </g>
+                                  );
+                                })}
+                              </svg>
+
+                              {nodes.map(node => {
+                                const isRoot = node.id === "ROOT";
+                                const isSelected = node.id === selectedNodeId;
+                                const stepColor = node.step?.color || (
+                                  node.type === "app" ? "#37d6bf" :
+                                  node.type === "website" ? "#5cc8ff" :
+                                  node.type === "folder" ? "#f6b95b" :
+                                  node.type === "script" ? "#bf5cff" :
+                                  node.type === "wait" ? "#a0aec0" : "var(--gold)"
+                                );
+
+                                if (isRoot) {
+                                  return (
+                                    <div 
+                                      key={node.id}
+                                      onClick={() => setSelectedNodeId(null)}
+                                      onContextMenu={(e) => handleNodeContextMenu(e, node.id)}
+                                      style={{
+                                        position: "absolute",
+                                        left: `${node.x - 90}px`,
+                                        top: `${node.y - 33}px`,
+                                        width: "180px",
+                                        height: "66px",
+                                        borderRadius: "10px",
+                                        background: "rgba(24, 30, 40, 0.95)",
+                                        border: "2px solid var(--gold)",
+                                        boxShadow: "0 0 16px rgba(197, 160, 89, 0.35)",
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        justifyContent: "center",
+                                        alignItems: "center",
+                                        gap: "2px",
+                                        cursor: "pointer",
+                                        zIndex: 5
+                                      }}
+                                    >
+                                      <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--gold)" }}>
+                                        <Workflow size={14} />
+                                        <span style={{ fontWeight: "bold", fontSize: "0.85rem", letterSpacing: "1px" }}>启动工作区</span>
+                                      </div>
+                                      <span style={{ fontSize: "0.65rem", color: "var(--gold)", opacity: 0.8 }}>根节点</span>
+                                    </div>
+                                  );
+                                }
+
+                                return (
+                                  <div 
+                                    key={node.id}
+                                    onClick={() => setSelectedNodeId(node.id)}
+                                    onContextMenu={(e) => handleNodeContextMenu(e, node.id)}
+                                    style={{
+                                      position: "absolute",
+                                      left: `${node.x - 77}px`,
+                                      top: `${node.y - 31}px`,
+                                      width: "155px",
+                                      height: "62px",
+                                      borderRadius: "8px",
+                                      background: "rgba(18, 22, 28, 0.9)",
+                                      border: isSelected ? `2px solid ${stepColor}` : "1px solid var(--line-strong)",
+                                      boxShadow: isSelected 
+                                        ? `0 0 14px ${stepColor}40`
+                                        : "0 4px 10px rgba(0,0,0,0.3)",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      padding: "8px",
+                                      gap: "8px",
+                                      cursor: "pointer",
+                                      zIndex: 4,
+                                      transition: "border-color 0.2s, box-shadow 0.2s"
+                                    }}
+                                  >
+                                    <div 
+                                      style={{
+                                        width: "28px",
+                                        height: "28px",
+                                        borderRadius: "6px",
+                                        background: `${stepColor}15`,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        color: stepColor,
+                                        flexShrink: 0
+                                      }}
+                                    >
+                                      {getStepIcon(node.type)}
+                                    </div>
+                                    
+                                    <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flexGrow: 1 }}>
+                                      <span 
+                                        style={{ 
+                                          fontWeight: "bold", 
+                                          fontSize: "0.75rem", 
+                                          color: isSelected ? "var(--text-strong)" : "var(--text)", 
+                                          overflow: "hidden", 
+                                          textOverflow: "ellipsis", 
+                                          whiteSpace: "nowrap" 
+                                        }}
+                                      >
+                                        {node.title}
+                                      </span>
+                                      <span style={{ fontSize: "0.62rem", color: "var(--text-muted)", marginTop: "2px" }}>
+                                        {node.type === "item" ? "已存资源" :
+                                         node.type === "app" ? "应用" :
+                                         node.type === "website" ? "网站" :
+                                         node.type === "folder" ? "文件夹" :
+                                         node.type === "file" ? "文件" :
+                                         node.type === "script" ? "脚本" :
+                                         node.type === "wait" ? "等待" : "未知"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div 
+                            className="graph-minimap glass-panel"
+                            style={{
+                              position: "absolute",
+                              left: "12px",
+                              bottom: "12px",
+                              width: "120px",
+                              height: "90px",
+                              background: "rgba(18, 22, 28, 0.95)",
+                              border: "1px solid var(--line-strong)",
+                              borderRadius: "8px",
+                              overflow: "hidden",
+                              pointerEvents: "none",
+                              zIndex: 10
+                            }}
+                          >
+                            <div 
+                              style={{ 
+                                position: "relative", 
+                                width: "100%", 
+                                height: "100%",
+                                background: "rgba(255, 255, 255, 0.01)"
+                              }}
+                            >
+                              {nodes.map(node => {
+                                const isRoot = node.id === "ROOT";
+                                const isSelected = node.id === selectedNodeId;
+                                const stepColor = isRoot ? "var(--gold)" : (
+                                  node.type === "app" ? "#37d6bf" :
+                                  node.type === "website" ? "#5cc8ff" :
+                                  node.type === "folder" ? "#f6b95b" :
+                                  node.type === "script" ? "#bf5cff" :
+                                  node.type === "wait" ? "#a0aec0" : "var(--gold)"
+                                );
+
+                                const scaleX = 100 / boundaryW;
+                                const scaleY = 70 / boundaryH;
+                                const scale = Math.min(scaleX, scaleY);
+                                const mapX = (node.x - minX) * scale + 10;
+                                const mapY = (node.y - minY) * scale + 10;
+
+                                return (
+                                  <div 
+                                    key={`map-${node.id}`}
+                                    style={{
+                                      position: "absolute",
+                                      left: `${mapX}px`,
+                                      top: `${mapY}px`,
+                                      width: isRoot ? "14px" : "10px",
+                                      height: isRoot ? "8px" : "6px",
+                                      borderRadius: "1px",
+                                      background: stepColor,
+                                      border: isSelected ? "1px solid #ffffff" : "none",
+                                      transform: "translate(-50%, -50%)",
+                                      opacity: isSelected ? 1 : 0.6
+                                    }}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div 
+                            className="graph-controls glass-panel"
+                            style={{
+                              position: "absolute",
+                              right: "12px",
+                              bottom: "12px",
+                              background: "rgba(18, 22, 28, 0.95)",
+                              border: "1px solid var(--line-strong)",
+                              borderRadius: "8px",
+                              display: "flex",
+                              alignItems: "center",
+                              padding: "4px 8px",
+                              gap: "8px",
+                              zIndex: 10,
+                              pointerEvents: "auto"
+                            }}
+                          >
+                            <button 
+                              type="button" 
+                              className="icon-button"
+                              title={isGraphLocked ? "解锁画幅编辑" : "锁定画幅编辑"}
+                              onClick={() => setIsGraphLocked(!isGraphLocked)}
+                              style={{ color: isGraphLocked ? "#ef4444" : "var(--text)" }}
+                            >
+                              {isGraphLocked ? <X size={14} /> : <Save size={14} />}
+                            </button>
+                            <div style={{ width: "1px", height: "14px", background: "var(--line)" }} />
+                            <button 
+                              type="button" 
+                              className="icon-button"
+                              title="自适应居中"
+                              onClick={handleZoomToFit}
+                            >
+                              <Workflow size={14} />
+                            </button>
+                            <button 
+                              type="button" 
+                              className="icon-button"
+                              title="缩小"
+                              onClick={() => setGraphZoomLevel(Math.max(0.3, graphZoomLevel - 0.1))}
+                            >
+                              <ArrowDown size={14} />
+                            </button>
+                            <span style={{ fontSize: "0.68rem", color: "var(--text-muted)", minWidth: "32px", textAlign: "center" }}>
+                              {Math.round(graphZoomLevel * 100)}%
+                            </span>
+                            <button 
+                              type="button" 
+                              className="icon-button"
+                              title="放大"
+                              onClick={() => setGraphZoomLevel(Math.min(2.0, graphZoomLevel + 0.1))}
+                            >
+                              <ArrowUp size={14} />
+                            </button>
+                          </div>
+
+                          <button 
+                            type="button" 
+                            className="secondary-action compact-action"
+                            onClick={() => setIsGraphFullscreen(!isGraphFullscreen)}
+                            style={{
+                              position: "absolute",
+                              right: selectedNodeId ? "348px" : "12px",
+                              top: "12px",
+                              zIndex: 11,
+                              height: "30px",
+                              padding: "0 12px",
+                              fontSize: "0.75rem",
+                              borderRadius: "6px",
+                              background: "rgba(18, 22, 28, 0.95)",
+                              border: "1px solid var(--line-strong)",
+                              color: "var(--text)",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              transition: "all 0.15s ease",
+                              pointerEvents: "auto"
+                            }}
+                          >
+                            {isGraphFullscreen ? "退出全屏" : "全屏"}
+                          </button>
+
+                          {selectedNode && selectedNode.step && (
+                            <div 
+                              className="graph-node-details-drawer glass-panel"
+                              style={{
+                                position: "absolute",
+                                right: "12px",
+                                top: "12px",
+                                bottom: "12px",
+                                width: "320px",
+                                background: "rgba(18, 22, 28, 0.95)",
+                                border: "1px solid var(--line-strong)",
+                                borderRadius: "8px",
+                                padding: "16px",
+                                zIndex: 12,
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "12px",
+                                boxShadow: "-4px 0 16px rgba(0,0,0,0.5)",
+                                pointerEvents: "auto"
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)", paddingBottom: "8px" }}>
+                                <span style={{ fontWeight: "bold", fontSize: "0.85rem", color: "var(--gold)" }}>步骤节点配置</span>
+                                <button 
+                                  type="button" 
+                                  className="icon-button"
+                                  onClick={() => setSelectedNodeId(null)}
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+
+                              <div style={{ overflowY: "auto", flexGrow: 1, display: "flex", flexDirection: "column", gap: "12px", paddingRight: "4px" }}>
+                                <div className="step-input" style={{ width: "100%" }}>
+                                  <label style={{ fontSize: "0.7rem" }}>步骤类型</label>
+                                  <select
+                                    value={selectedNode.step.type === "item" ? "item" : (selectedNode.step.itemId ? "item" : selectedNode.step.type)}
+                                    onChange={(e) => {
+                                      const newType = e.target.value as any;
+                                      if (newType === "item") {
+                                        handleUpdateStep(selectedNode.id, { type: "item", itemId: undefined, title: "未关联资源", target: "" });
+                                      } else if (newType === "script") {
+                                        handleUpdateStep(selectedNode.id, { 
+                                          type: "script", 
+                                          itemId: undefined, 
+                                          title: "运行脚本", 
+                                          target: "",
+                                          scriptConfig: { type: "bat", content: "@echo off\necho Hello World", useFile: false, filePath: "" } 
+                                        });
+                                      } else if (newType === "wait") {
+                                        handleUpdateStep(selectedNode.id, { 
+                                          type: "wait", 
+                                          itemId: undefined, 
+                                          title: "等待条件", 
+                                          target: "",
+                                          waitCondition: { type: "time", value: "5000", timeoutMs: 30000 } 
+                                        });
+                                      } else {
+                                        handleUpdateStep(selectedNode.id, { type: newType, itemId: undefined, title: "", target: "" });
+                                      }
+                                    }}
+                                    style={{ width: "100%", height: "28px", fontSize: "0.75rem", background: "var(--field)", border: "1px solid var(--line)", color: "var(--text)" }}
+                                  >
+                                    <option value="item">关联已有资源</option>
+                                    <option value="app">自定义程序</option>
+                                    <option value="website">自定义网址</option>
+                                    <option value="folder">自定义文件夹</option>
+                                    <option value="file">自定义文件</option>
+                                    <option value="script">脚本命令</option>
+                                    <option value="wait">条件等待</option>
+                                  </select>
+                                </div>
+
+                                {(selectedNode.step.type === "item" || selectedNode.step.itemId) && (
+                                  <div className="step-input" style={{ width: "100%" }}>
+                                    <label style={{ fontSize: "0.7rem" }}>关联资源</label>
+                                    <button 
+                                      type="button" 
+                                      className="select-resource-btn"
+                                      onClick={() => {
+                                        setSelectorStepId(selectedNode.id);
+                                        setSelectorSearch("");
+                                      }}
+                                      style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", height: "30px", background: "var(--surface-3)", border: "1px dashed var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text)", cursor: "pointer", fontSize: "0.75rem" }}
+                                    >
+                                      {selectedNode.step.itemId ? (
+                                        <>
+                                          {getStepIcon(selectedNode.step.type)}
+                                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedNode.step.title}</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Plus size={12} />
+                                          <span>选择资源...</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+                                )}
+
+                                <div className="step-input" style={{ width: "100%" }}>
+                                  <label style={{ fontSize: "0.7rem" }}>标题</label>
+                                  <input 
+                                    type="text"
+                                    value={selectedNode.step.title}
+                                    onChange={(e) => handleUpdateStep(selectedNode.id, { title: e.target.value })}
+                                    style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
+                                  />
+                                </div>
+
+                                <div className="step-input" style={{ width: "100%" }}>
+                                  <label style={{ fontSize: "0.7rem" }}>依赖前驱节点 (决定连接关系)</label>
+                                  <select
+                                    value={selectedNode.step.dependsOn && selectedNode.step.dependsOn[0] ? selectedNode.step.dependsOn[0] : "ROOT"}
+                                    onChange={(e) => {
+                                      const parentId = e.target.value;
+                                      if (parentId === "ROOT") {
+                                        handleUpdateStep(selectedNode.id, { dependsOn: [] });
+                                      } else {
+                                        handleUpdateStep(selectedNode.id, { dependsOn: [parentId] });
+                                      }
+                                    }}
+                                    style={{ width: "100%", height: "28px", fontSize: "0.75rem", background: "var(--field)", border: "1px solid var(--line)", color: "var(--text)" }}
+                                  >
+                                    <option value="ROOT">启动工作区 (根节点)</option>
+                                    {editingSteps
+                                      .filter(s => s.id !== selectedNode.id)
+                                      .map((s, sIdx) => (
+                                        <option key={s.id} value={s.id}>
+                                          步骤 {sIdx + 1}: {s.title}
+                                        </option>
+                                      ))}
+                                  </select>
+                                </div>
+
+                                {selectedNode.step.type !== "item" && selectedNode.step.type !== "script" && selectedNode.step.type !== "wait" && (
+                                  <div className="step-input" style={{ width: "100%" }}>
+                                    <label style={{ fontSize: "0.7rem" }}>
+                                      {selectedNode.step.type === "website" ? "网页网址" : "目标路径"}
+                                    </label>
+                                    <div style={{ display: "flex", gap: "4px", width: "100%" }}>
+                                      <input 
+                                        type="text"
+                                        value={selectedNode.step.target}
+                                        onChange={(e) => handleUpdateStep(selectedNode.id, { target: e.target.value })}
+                                        placeholder={selectedNode.step.type === "website" ? "https://..." : "C:\\path\\to\\..."}
+                                        style={{ flexGrow: 1, height: "28px", fontSize: "0.75rem" }}
+                                      />
+                                      {selectedNode.step.type === "folder" && (
+                                        <button
+                                          type="button"
+                                          style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "28px", cursor: "pointer" }}
+                                          onClick={async () => {
+                                            const picked = await handlePickFolder();
+                                            if (picked) handleUpdateStep(selectedNode.id, { target: picked });
+                                          }}
+                                        >
+                                          <FolderOpen size={14} />
+                                        </button>
+                                      )}
+                                      {(selectedNode.step.type === "app" || selectedNode.step.type === "file") && (
+                                        <button
+                                          type="button"
+                                          style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "28px", cursor: "pointer" }}
+                                          onClick={async () => {
+                                            const picked = await handlePickFile();
+                                            if (picked) handleUpdateStep(selectedNode.id, { target: picked });
+                                          }}
+                                        >
+                                          <FileText size={14} />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {(selectedNode.step.type === "app" || selectedNode.step.type === "file") && (
+                                  <div className="step-input" style={{ width: "100%" }}>
+                                    <label style={{ fontSize: "0.7rem" }}>启动参数</label>
+                                    <input 
+                                      type="text"
+                                      value={selectedNode.step.arguments || ""}
+                                      onChange={(e) => handleUpdateStep(selectedNode.id, { arguments: e.target.value })}
+                                      placeholder="例如: --nosplash --host=127.0.0.1"
+                                      style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
+                                    />
+                                  </div>
+                                )}
+
+                                {selectedNode.step.type === "app" && (
+                                  <div className="step-input" style={{ width: "100%" }}>
+                                    <label style={{ fontSize: "0.7rem" }}>工作目录</label>
+                                    <div style={{ display: "flex", gap: "4px", width: "100%" }}>
+                                      <input 
+                                        type="text"
+                                        value={selectedNode.step.workingDirectory || ""}
+                                        onChange={(e) => handleUpdateStep(selectedNode.id, { workingDirectory: e.target.value })}
+                                        placeholder="默认与程序同目录"
+                                        style={{ flexGrow: 1, height: "28px", fontSize: "0.75rem" }}
+                                      />
+                                      <button
+                                        type="button"
+                                        style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "28px", cursor: "pointer" }}
+                                        onClick={async () => {
+                                          const picked = await handlePickFolder();
+                                          if (picked) handleUpdateStep(selectedNode.id, { workingDirectory: picked });
+                                        }}
+                                      >
+                                        <FolderOpen size={14} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {selectedNode.step.type === "script" && (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%", background: "rgba(255,255,255,0.02)", padding: "8px", borderRadius: "6px", border: "1px solid var(--line)" }}>
+                                    <div className="step-input" style={{ width: "100%" }}>
+                                      <label style={{ fontSize: "0.7rem" }}>脚本类型</label>
+                                      <select
+                                        value={selectedNode.step.scriptConfig?.type || "bat"}
+                                        onChange={(e) => handleUpdateStep(selectedNode.id, { 
+                                          scriptConfig: { ...(selectedNode.step.scriptConfig || { content: "", useFile: false, filePath: "" }), type: e.target.value as any } 
+                                        })}
+                                        style={{ width: "100%", height: "28px", fontSize: "0.75rem", background: "var(--field)", border: "1px solid var(--line)", color: "var(--text)" }}
+                                      >
+                                        <option value="bat">Batch (.bat/.cmd)</option>
+                                        <option value="ps1">PowerShell (.ps1)</option>
+                                      </select>
+                                    </div>
+
+                                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                      <label className="toggle-label" style={{ fontSize: "0.72rem", display: "flex", alignItems: "center", gap: "4px" }}>
+                                        <input
+                                          type="radio"
+                                          name={`script-source-drawer-${selectedNode.id}`}
+                                          checked={!selectedNode.step.scriptConfig?.useFile}
+                                          onChange={() => handleUpdateStep(selectedNode.id, { 
+                                            scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", content: "", filePath: "" }), useFile: false } 
+                                          })}
+                                        />
+                                        在线编写脚本
+                                      </label>
+                                      <label className="toggle-label" style={{ fontSize: "0.72rem", display: "flex", alignItems: "center", gap: "4px" }}>
+                                        <input
+                                          type="radio"
+                                          name={`script-source-drawer-${selectedNode.id}`}
+                                          checked={selectedNode.step.scriptConfig?.useFile === true}
+                                          onChange={() => handleUpdateStep(selectedNode.id, { 
+                                            scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", content: "", filePath: "" }), useFile: true } 
+                                          })}
+                                        />
+                                        执行本地脚本文件
+                                      </label>
+                                    </div>
+
+                                    {!selectedNode.step.scriptConfig?.useFile ? (
+                                      <div className="step-input" style={{ width: "100%" }}>
+                                        <label style={{ fontSize: "0.7rem" }}>脚本内容</label>
+                                        <textarea
+                                          value={selectedNode.step.scriptConfig?.content || ""}
+                                          onChange={(e) => handleUpdateStep(selectedNode.id, { 
+                                            scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", useFile: false, filePath: "" }), content: e.target.value } 
+                                          })}
+                                          placeholder={selectedNode.step.scriptConfig?.type === "ps1" ? "PowerShell script..." : "Batch script..."}
+                                          rows={4}
+                                          style={{ width: "100%", background: "var(--field)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text)", padding: "6px", fontFamily: "monospace", fontSize: "0.75rem" }}
+                                        />
+                                      </div>
+                                    ) : (
+                                      <div className="step-input" style={{ width: "100%" }}>
+                                        <label style={{ fontSize: "0.7rem" }}>脚本文件路径</label>
+                                        <div style={{ display: "flex", gap: "4px", width: "100%" }}>
+                                          <input
+                                            type="text"
+                                            value={selectedNode.step.scriptConfig?.filePath || ""}
+                                            onChange={(e) => handleUpdateStep(selectedNode.id, { 
+                                              scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", useFile: true, content: "" }), filePath: e.target.value } 
+                                            })}
+                                            placeholder="C:\path\to\script"
+                                            style={{ flexGrow: 1, height: "28px", fontSize: "0.75rem" }}
+                                          />
+                                          <button
+                                            type="button"
+                                            style={{ padding: "0 8px", background: "var(--surface-3)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)", color: "var(--text-muted)", height: "28px", cursor: "pointer" }}
+                                            onClick={async () => {
+                                              const picked = await handlePickFile();
+                                              if (picked) {
+                                                handleUpdateStep(selectedNode.id, { 
+                                                  scriptConfig: { ...(selectedNode.step.scriptConfig || { type: "bat", useFile: true, content: "" }), filePath: picked } 
+                                                });
+                                              }
+                                            }}
+                                          >
+                                            <FileText size={14} />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {selectedNode.step.type === "wait" && (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%", background: "rgba(255,255,255,0.02)", padding: "8px", borderRadius: "6px", border: "1px solid var(--line)" }}>
+                                    <div className="step-input" style={{ width: "100%" }}>
+                                      <label style={{ fontSize: "0.7rem" }}>等待类型</label>
+                                      <select
+                                        value={selectedNode.step.waitCondition?.type || "time"}
+                                        onChange={(e) => handleUpdateStep(selectedNode.id, { 
+                                          waitCondition: { ...(selectedNode.step.waitCondition || { value: "", timeoutMs: 30000 }), type: e.target.value as any } 
+                                        })}
+                                        style={{ width: "100%", height: "28px", fontSize: "0.75rem", background: "var(--field)", border: "1px solid var(--line)", color: "var(--text)" }}
+                                      >
+                                        <option value="time">指定时间 (延迟等待)</option>
+                                        <option value="process_start">进程启动 (等待软件打开)</option>
+                                        <option value="process_stop">进程退出 (等待软件关闭)</option>
+                                        <option value="port">端口开放 (等待TCP服务就绪)</option>
+                                      </select>
+                                    </div>
+
+                                    <div className="step-input" style={{ width: "100%" }}>
+                                      <label style={{ fontSize: "0.7rem" }}>
+                                        {selectedNode.step.waitCondition?.type === "time" ? "等待时间 (毫秒)" :
+                                         selectedNode.step.waitCondition?.type === "port" ? "端口号 (或 host:port)" : "进程名 (例如: chrome.exe)"}
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={selectedNode.step.waitCondition?.value || ""}
+                                        onChange={(e) => handleUpdateStep(selectedNode.id, { 
+                                          waitCondition: { ...(selectedNode.step.waitCondition || { type: "time", timeoutMs: 30000 }), value: e.target.value } 
+                                        })}
+                                        placeholder={selectedNode.step.waitCondition?.type === "time" ? "3000" :
+                                                     selectedNode.step.waitCondition?.type === "port" ? "8080" : "app.exe"}
+                                        style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
+                                      />
+                                    </div>
+
+                                    {selectedNode.step.waitCondition?.type !== "time" && (
+                                      <div className="step-input" style={{ width: "100%" }}>
+                                        <label style={{ fontSize: "0.7rem" }}>超时时间 (毫秒)</label>
+                                        <input
+                                          type="number"
+                                          value={selectedNode.step.waitCondition?.timeoutMs || 30000}
+                                          onChange={(e) => handleUpdateStep(selectedNode.id, { 
+                                            waitCondition: { ...(selectedNode.step.waitCondition || { type: "process_start", value: "" }), timeoutMs: parseInt(e.target.value) || 30000 } 
+                                          })}
+                                          style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {selectedNode.step.type !== "wait" && (
+                                  <div className="step-input" style={{ width: "100%" }}>
+                                    <label style={{ fontSize: "0.7rem" }}>失败策略</label>
+                                    <select
+                                      value={selectedNode.step.failurePolicy || "continue"}
+                                      onChange={(e) => handleUpdateStep(selectedNode.id, { failurePolicy: e.target.value as any })}
+                                      style={{ width: "100%", height: "28px", fontSize: "0.75rem", background: "var(--field)", border: "1px solid var(--line)", color: "var(--text)" }}
+                                    >
+                                      <option value="continue">失败后继续</option>
+                                      <option value="stop">失败后停止</option>
+                                    </select>
+                                  </div>
+                                )}
+
+                                <div className="step-input" style={{ width: "100%" }}>
+                                  <label style={{ fontSize: "0.7rem" }}>启动后延迟 (毫秒)</label>
+                                  <input 
+                                    type="number"
+                                    min="0"
+                                    step="100"
+                                    value={selectedNode.step.delayMs || 0}
+                                    onChange={(e) => handleUpdateStep(selectedNode.id, { delayMs: parseInt(e.target.value) || 0 })}
+                                    style={{ width: "100%", height: "28px", fontSize: "0.75rem" }}
+                                  />
+                                </div>
+
+                                {selectedNode.step.type !== "script" && selectedNode.step.type !== "wait" && (
+                                  <div className="step-window-layout-config" style={{ marginTop: "4px", width: "100%", background: "var(--surface-3)", padding: "10px", borderRadius: "var(--radius-sm)", border: "1px dashed var(--line)", display: "flex", flexDirection: "column", gap: "6px", pointerEvents: "auto" }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                      <label style={{ fontSize: "0.7rem", fontWeight: "bold", color: "var(--gold)", display: "flex", alignItems: "center", gap: "4px" }}>
+                                        <AppWindow size={12} /> 窗口位置布局保存
+                                      </label>
+                                      {selectedNode.step.windowLayout ? (
+                                        <button 
+                                          type="button" 
+                                          className="text-action compact-action" 
+                                          style={{ fontSize: "0.7rem", color: "#ef4444", border: "none", background: "none", cursor: "pointer", padding: 0 }}
+                                          onClick={() => handleUpdateStep(selectedNode.id, { windowLayout: undefined })}
+                                        >
+                                          清除位置
+                                        </button>
+                                      ) : (
+                                        <button 
+                                          type="button" 
+                                          className="text-action compact-action" 
+                                          style={{ fontSize: "0.7rem", color: "var(--gold)", border: "none", background: "none", cursor: "pointer", padding: 0 }}
+                                          onClick={() => handleCaptureSingleStepLayout(selectedNode.id)}
+                                        >
+                                          捕获当前位置
+                                        </button>
+                                      )}
+                                    </div>
+                                    {selectedNode.step.windowLayout ? (
+                                      <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "flex", flexDirection: "column", gap: "3px" }}>
+                                        <div><strong>坐标 (X, Y):</strong> ({selectedNode.step.windowLayout.x}, {selectedNode.step.windowLayout.y})</div>
+                                        <div><strong>尺寸 (W x H):</strong> {selectedNode.step.windowLayout.width} x {selectedNode.step.windowLayout.height}</div>
+                                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><strong>进程名:</strong> {selectedNode.step.windowLayout.processName}</div>
+                                        {selectedNode.step.windowLayout.isMaximized && <div style={{ color: "var(--gold)" }}><strong>状态:</strong> 自动最大化</div>}
+                                        <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
+                                          <input 
+                                            type="checkbox" 
+                                            id={`always-on-top-drawer-${selectedNode.step.id}`}
+                                            checked={selectedNode.step.windowLayout.alwaysOnTop === true}
+                                            onChange={(e) => {
+                                              const nextLayout = { ...selectedNode.step.windowLayout, alwaysOnTop: e.target.checked };
+                                              handleUpdateStep(selectedNode.id, { windowLayout: nextLayout as any });
+                                            }}
+                                            style={{ cursor: "pointer", accentColor: "var(--gold)", width: "12px", height: "12px" }}
+                                          />
+                                          <label htmlFor={`always-on-top-drawer-${selectedNode.step.id}`} style={{ margin: 0, cursor: "pointer", fontSize: "0.7rem" }}>窗口始终置顶</label>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <span style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>未绑定窗口位置。</span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div style={{ borderTop: "1px solid var(--line)", paddingTop: "8px", display: "flex", gap: "6px" }}>
+                                <button 
+                                  type="button" 
+                                  className="secondary-action compact-action"
+                                  onClick={() => {
+                                    setExpandedStepIds([...expandedStepIds, selectedNode.id]);
+                                    setEditorViewMode("card");
+                                    setSelectedNodeId(null);
+                                  }}
+                                  style={{ flexGrow: 1, height: "28px", fontSize: "0.75rem" }}
+                                >
+                                  卡片高级配置
+                                </button>
+                                <button 
+                                  type="button" 
+                                  className="secondary-action compact-action danger-action"
+                                  onClick={() => {
+                                    handleDeleteStep(selectedNode.id);
+                                    setSelectedNodeId(null);
+                                  }}
+                                  style={{ height: "28px", width: "28px", padding: 0 }}
+                                  title="删除步骤"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
               )}
             </div>
 
@@ -1388,7 +2799,20 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
                 const isLaunching = launchingId === ws.id;
 
                 return (
-                  <div key={ws.id} className="workspace-card glass-panel" style={{ borderTop: `4px solid ${ws.color || "#E0533C"}` }}>
+                  <div 
+                    key={ws.id} 
+                    className="workspace-card glass-panel" 
+                    style={{ borderTop: `4px solid ${ws.color || "#E0533C"}` }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setWorkspaceContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        workspace: ws
+                      });
+                    }}
+                  >
                     <div className="card-top">
                       <div className="ws-icon-circle" style={{ backgroundColor: `${ws.color}15` }}>
                         {getWorkspaceIcon(ws.icon || "Briefcase", ws.color, 24)}
@@ -1777,6 +3201,299 @@ export function Workspaces({ pluginHost, items }: WorkspacesProps) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {workspaceContextMenu && (
+        <div 
+          className="workspace-custom-contextmenu glass-panel"
+          style={{
+            position: "fixed",
+            left: `${workspaceContextMenu.x}px`,
+            top: `${workspaceContextMenu.y}px`,
+            zIndex: 99999,
+            padding: "4px",
+            minWidth: "130px",
+            background: "rgba(18, 22, 28, 0.9)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid var(--line-strong)",
+            borderRadius: "var(--radius-md)",
+            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05), 0 0 15px rgba(197, 160, 89, 0.1)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "2px"
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button 
+            type="button"
+            className="contextmenu-item"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--text)",
+              padding: "6px 12px",
+              fontSize: "0.82rem",
+              textAlign: "left",
+              cursor: "pointer",
+              borderRadius: "var(--radius-sm)",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              width: "100%",
+              transition: "all 0.15s ease"
+            }}
+            onClick={() => {
+              handleLaunch(workspaceContextMenu.workspace);
+              setWorkspaceContextMenu(null);
+            }}
+          >
+            <Play size={14} style={{ color: "var(--gold)" }} />
+            <span>启动工作区</span>
+          </button>
+          <button 
+            type="button"
+            className="contextmenu-item"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--text)",
+              padding: "6px 12px",
+              fontSize: "0.82rem",
+              textAlign: "left",
+              cursor: "pointer",
+              borderRadius: "var(--radius-sm)",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              width: "100%",
+              transition: "all 0.15s ease"
+            }}
+            onClick={() => {
+              handleEditWorkspace(workspaceContextMenu.workspace);
+              setWorkspaceContextMenu(null);
+            }}
+          >
+            <Edit3 size={14} />
+            <span>编辑工作区</span>
+          </button>
+          <div style={{ height: "1px", background: "var(--line)", margin: "4px 0" }} />
+          <button 
+            type="button"
+            className="contextmenu-item text-danger"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--danger)",
+              padding: "6px 12px",
+              fontSize: "0.82rem",
+              textAlign: "left",
+              cursor: "pointer",
+              borderRadius: "var(--radius-sm)",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              width: "100%",
+              transition: "all 0.15s ease"
+            }}
+            onClick={() => {
+              handleDeleteWorkspace(workspaceContextMenu.workspace.id);
+              setWorkspaceContextMenu(null);
+            }}
+          >
+            <Trash2 size={14} />
+            <span>删除工作区</span>
+          </button>
+        </div>
+      )}
+
+      {nodeContextMenu && (
+        <div 
+          className="workspace-custom-contextmenu glass-panel"
+          style={{
+            position: "fixed",
+            left: `${nodeContextMenu.x}px`,
+            top: `${nodeContextMenu.y}px`,
+            zIndex: 99999,
+            padding: "4px",
+            minWidth: "120px",
+            background: "rgba(18, 22, 28, 0.95)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid var(--line-strong)",
+            borderRadius: "var(--radius-md)",
+            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05), 0 0 15px rgba(197, 160, 89, 0.1)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "2px"
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button 
+            type="button"
+            className="contextmenu-item"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--text)",
+              padding: "8px 12px",
+              fontSize: "0.82rem",
+              textAlign: "left",
+              cursor: "pointer",
+              borderRadius: "var(--radius-sm)",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              width: "100%",
+              transition: "all 0.15s ease"
+            }}
+            onClick={() => {
+              const targetParentId = nodeContextMenu.nodeId === "ROOT" ? undefined : nodeContextMenu.nodeId;
+              handleAddStep(targetParentId);
+              setNodeContextMenu(null);
+            }}
+          >
+            <Plus size={14} /> 增加节点
+          </button>
+          
+          {copiedStep && (
+            <button 
+              type="button"
+              className="contextmenu-item"
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--text)",
+                padding: "8px 12px",
+                fontSize: "0.82rem",
+                textAlign: "left",
+                cursor: "pointer",
+                borderRadius: "var(--radius-sm)",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                width: "100%",
+                transition: "all 0.15s ease"
+              }}
+              onClick={() => {
+                handlePasteNodeAfter(nodeContextMenu.nodeId);
+                setNodeContextMenu(null);
+              }}
+            >
+              <Clipboard size={14} /> 粘贴节点
+            </button>
+          )}
+          
+          {nodeContextMenu.nodeId !== "ROOT" && (
+            <>
+              <button 
+                type="button"
+                className="contextmenu-item"
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--text)",
+                  padding: "8px 12px",
+                  fontSize: "0.82rem",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  borderRadius: "var(--radius-sm)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  width: "100%",
+                  transition: "all 0.15s ease"
+                }}
+                onClick={() => {
+                  handleCopyNode(nodeContextMenu.nodeId);
+                  setNodeContextMenu(null);
+                }}
+              >
+                <Copy size={14} /> 复制节点
+              </button>
+              
+              {copiedStep && (
+                <button 
+                  type="button"
+                  className="contextmenu-item"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--text)",
+                    padding: "8px 12px",
+                    fontSize: "0.82rem",
+                    textAlign: "left",
+                    cursor: "pointer",
+                    borderRadius: "var(--radius-sm)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    width: "100%",
+                    transition: "all 0.15s ease"
+                  }}
+                  onClick={() => {
+                    handleReplaceNode(nodeContextMenu.nodeId);
+                    setNodeContextMenu(null);
+                  }}
+                >
+                  <RefreshCw size={14} /> 替换节点
+                </button>
+              )}
+              
+              <button 
+                type="button"
+                className="contextmenu-item"
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--text)",
+                  padding: "8px 12px",
+                  fontSize: "0.82rem",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  borderRadius: "var(--radius-sm)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  width: "100%",
+                  transition: "all 0.15s ease"
+                }}
+                onClick={() => {
+                  setSelectedNodeId(nodeContextMenu.nodeId);
+                  setNodeContextMenu(null);
+                }}
+              >
+                <Edit3 size={14} /> 编辑节点
+              </button>
+              
+              <button 
+                type="button"
+                className="contextmenu-item text-danger"
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--danger)",
+                  padding: "8px 12px",
+                  fontSize: "0.82rem",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  borderRadius: "var(--radius-sm)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  width: "100%",
+                  transition: "all 0.15s ease"
+                }}
+                onClick={() => {
+                  handleDeleteStep(nodeContextMenu.nodeId);
+                  if (selectedNodeId === nodeContextMenu.nodeId) {
+                    setSelectedNodeId(null);
+                  }
+                  setNodeContextMenu(null);
+                }}
+              >
+                <Trash2 size={14} /> 删除节点
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

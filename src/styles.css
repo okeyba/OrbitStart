@@ -1250,19 +1250,61 @@ textarea:focus-visible {
 }
 
 .sidebar::after {
-  display: block;
-  width: 46px;
-  height: 46px;
-  margin-top: auto;
-  border: 1px solid rgba(214, 168, 92, 0.18);
+  display: none !important;
+}
+
+/* Sidebar Cosmic Settings Button replacing the decorative circle */
+.sidebar-cosmic-settings-btn {
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border: 1.5px solid rgba(214, 168, 92, 0.45);
   border-radius: 50%;
   background:
+    radial-gradient(circle, rgba(214, 168, 92, 0.5) 0 1.5px, transparent 2px),
+    radial-gradient(circle, transparent 0 48%, rgba(214, 168, 92, 0.4) 49% 50%, transparent 51%),
+    linear-gradient(90deg, transparent 0 49%, rgba(214, 168, 92, 0.25) 49% 51%, transparent 51%),
+    linear-gradient(0deg, transparent 0 49%, rgba(214, 168, 92, 0.25) 49% 51%, transparent 51%);
+  cursor: pointer;
+  outline: none;
+  position: relative;
+  transition: border-color 200ms ease, background 200ms ease, transform 200ms ease, box-shadow 200ms ease;
+  box-sizing: border-box;
+  margin-bottom: var(--space-2);
+}
+
+.sidebar-cosmic-settings-btn .settings-gear {
+  color: var(--gold);
+  opacity: 0.85;
+  transition: transform 0.6s cubic-bezier(0.25, 1, 0.5, 1), color 200ms ease, opacity 200ms ease;
+  z-index: 2;
+}
+
+.sidebar-cosmic-settings-btn:hover {
+  border-color: var(--accent, var(--teal)) !important;
+  background:
     radial-gradient(circle, rgba(214, 168, 92, 0.76) 0 2px, transparent 3px),
-    radial-gradient(circle, transparent 0 48%, rgba(214, 168, 92, 0.24) 49% 50%, transparent 51%),
-    linear-gradient(90deg, transparent 0 49%, rgba(214, 168, 92, 0.18) 49% 51%, transparent 51%),
-    linear-gradient(0deg, transparent 0 49%, rgba(214, 168, 92, 0.18) 49% 51%, transparent 51%);
-  content: "";
-  opacity: 0.7;
+    radial-gradient(circle, transparent 0 48%, rgba(214, 168, 92, 0.44) 49% 50%, transparent 51%),
+    linear-gradient(90deg, transparent 0 49%, rgba(214, 168, 92, 0.3) 49% 51%, transparent 51%),
+    linear-gradient(0deg, transparent 0 49%, rgba(214, 168, 92, 0.3) 49% 51%, transparent 51%) !important;
+  transform: scale(1.05);
+}
+
+.sidebar-cosmic-settings-btn:hover .settings-gear {
+  transform: rotate(180deg);
+  color: var(--text);
+  opacity: 1;
+}
+
+.sidebar-cosmic-settings-btn.active {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.sidebar-cosmic-settings-btn.active .settings-gear {
+  color: var(--accent);
+  opacity: 1;
 }
 
 .brand-mark {
@@ -7497,6 +7539,14 @@ html.bubble-menu-html,
 body.bubble-menu-body,
 body.bubble-menu-body #root {
   background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  outline: 0 !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+  width: 100%;
+  height: 100%;
 }
 
 /* Workspaces Panel Styles */
@@ -8506,4 +8556,24 @@ body.bubble-menu-body #root {
 .step-delay input,
 .step-input input[type="number"] {
   min-width: unset !important;
+}
+
+.contextmenu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--text-strong) !important;
+}
+.contextmenu-item.text-danger:hover {
+  background: rgba(231, 76, 60, 0.15) !important;
+  color: #ff6b6b !important;
+}
+
+/* Force dark style on workspace node settings selects option dropdowns */
+.graph-node-details-drawer select option {
+  background-color: #161a22 !important;
+  color: var(--text-strong, #ffffff) !important;
+}
+
+.graph-node-details-drawer select {
+  background-color: #12151e !important;
+  color: #ffffff !important;
 }

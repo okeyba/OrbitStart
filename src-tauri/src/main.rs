@@ -5822,29 +5822,419 @@ fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
 mod win32 {
     use std::ffi::c_void;
 
-    type HWND = *mut c_void;
-    type HRGN = *mut c_void;
-    type BOOL = i32;
+    pub type HWND = *mut c_void;
+    pub type HRGN = *mut c_void;
+    pub type BOOL = i32;
 
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct POINT {
+        pub x: i32,
+        pub y: i32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct RECT {
+        pub left: i32,
+        pub top: i32,
+        pub right: i32,
+        pub bottom: i32,
+    }
+
+    #[link(name = "gdi32")]
     extern "system" {
         pub fn CreateEllipticRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> HRGN;
         pub fn CreateRoundRectRgn(x1: i32, y1: i32, x2: i32, y2: i32, w: i32, h: i32) -> HRGN;
-        pub fn SetWindowRgn(hWnd: HWND, hRgn: HRGN, bRedraw: BOOL) -> i32;
         pub fn DeleteObject(ho: *mut c_void) -> BOOL;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn SetWindowRgn(hWnd: HWND, hRgn: HRGN, bRedraw: BOOL) -> i32;
+        pub fn GetCursorPos(lpPoint: *mut POINT) -> BOOL;
+        pub fn GetWindowRect(hWnd: HWND, lpRect: *mut RECT) -> BOOL;
+        pub fn IsWindowVisible(hWnd: HWND) -> BOOL;
+        pub fn GetAsyncKeyState(vKey: i32) -> i16;
+        pub fn SetWindowPos(
+            hWnd: HWND,
+            hWndInsertAfter: HWND,
+            X: i32,
+            Y: i32,
+            cx: i32,
+            cy: i32,
+            uFlags: u32,
+        ) -> BOOL;
+        pub fn GetAncestor(hWnd: HWND, gaFlags: u32) -> HWND;
     }
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
-fn apply_elliptic_region(_window: &tauri::WebviewWindow) -> Result<(), String> {
-    // Return Ok(()) to let Tauri's native window transparency handle click-through
-    // and prevent Windows from drawing native white border frames (white crescent shape).
+const GA_ROOT: u32 = 2;
+#[cfg(all(desktop, target_os = "windows"))]
+const VK_LBUTTON: i32 = 0x01;
+#[cfg(all(desktop, target_os = "windows"))]
+const VK_RBUTTON: i32 = 0x02;
+#[cfg(all(desktop, target_os = "windows"))]
+const SWP_NOSIZE: u32 = 0x0001;
+#[cfg(all(desktop, target_os = "windows"))]
+const SWP_NOZORDER: u32 = 0x0004;
+#[cfg(all(desktop, target_os = "windows"))]
+const SWP_NOACTIVATE: u32 = 0x0010;
+
+#[cfg(all(desktop, target_os = "windows"))]
+#[derive(Clone, Copy, Default)]
+struct BubbleInputDrag {
+    start_cursor: win32::POINT,
+    start_rect: win32::RECT,
+    moved: bool,
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+#[derive(Default)]
+struct BubbleInputState {
+    hwnd: usize,
+    app: Option<tauri::AppHandle>,
+    drag: Option<BubbleInputDrag>,
+    worker_started: bool,
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+static BUBBLE_INPUT_STATE: OnceLock<Mutex<BubbleInputState>> = OnceLock::new();
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn bubble_input_state() -> &'static Mutex<BubbleInputState> {
+    BUBBLE_INPUT_STATE.get_or_init(|| Mutex::new(BubbleInputState::default()))
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn root_hwnd(hwnd: win32::HWND) -> win32::HWND {
+    if hwnd.is_null() {
+        return hwnd;
+    }
+    let root = unsafe { win32::GetAncestor(hwnd, GA_ROOT) };
+    if root.is_null() {
+        hwnd
+    } else {
+        root
+    }
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+struct CurrentProcessWindowTitleQuery {
+    title: &'static str,
+    hwnd: win32::HWND,
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+unsafe extern "system" fn enum_current_process_window_by_title(
+    hwnd: *mut std::ffi::c_void,
+    lparam: isize,
+) -> i32 {
+    if IsWindowVisible(hwnd) == 0 {
+        return 1;
+    }
+
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, &mut pid);
+    if pid == 0 || pid != GetCurrentProcessId() {
+        return 1;
+    }
+
+    let style = GetWindowLongW(hwnd, -16);
+    if (style & 0x40000000) != 0 {
+        return 1;
+    }
+
+    let query = &mut *(lparam as *mut CurrentProcessWindowTitleQuery);
+    let mut title_buf = [0u16; 256];
+    let len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 256);
+    if len <= 0 {
+        return 1;
+    }
+    let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+    if title == query.title {
+        query.hwnd = hwnd as win32::HWND;
+        return 0;
+    }
+
+    1
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn current_process_window_by_title(title: &'static str) -> win32::HWND {
+    let mut query = CurrentProcessWindowTitleQuery {
+        title,
+        hwnd: std::ptr::null_mut(),
+    };
+    unsafe {
+        EnumWindows(
+            enum_current_process_window_by_title,
+            &mut query as *mut CurrentProcessWindowTitleQuery as isize,
+        );
+    }
+    query.hwnd
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn top_level_hwnd_for_window(window: &tauri::WebviewWindow, title: &'static str) -> Result<win32::HWND, String> {
+    let by_title = current_process_window_by_title(title);
+    if !by_title.is_null() {
+        return Ok(by_title);
+    }
+
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("Failed to read window HWND: {error}"))?;
+    Ok(root_hwnd(hwnd.0 as win32::HWND))
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn point_inside_bubble_region(rect: win32::RECT, point: win32::POINT) -> bool {
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 0 || height <= 0 {
+        return false;
+    }
+    let diameter = width.min(height) as f64;
+    let radius = diameter / 2.0;
+    if radius <= 0.0 {
+        return false;
+    }
+    let center_x = rect.left as f64 + width as f64 / 2.0;
+    let center_y = rect.top as f64 + height as f64 / 2.0;
+    let dx = point.x as f64 - center_x;
+    let dy = point.y as f64 - center_y;
+    (dx * dx + dy * dy) <= radius * radius
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn current_bubble_rect(hwnd: win32::HWND) -> Option<win32::RECT> {
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut rect = win32::RECT::default();
+    if unsafe { win32::GetWindowRect(hwnd, &mut rect) != 0 } {
+        Some(rect)
+    } else {
+        None
+    }
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn run_on_main_from_bubble_input(app: tauri::AppHandle, action: impl FnOnce(tauri::AppHandle) + Send + 'static) {
+    let app_for_closure = app.clone();
+    let _ = app.run_on_main_thread(move || action(app_for_closure));
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn activate_bubble_input(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+    let hwnd = top_level_hwnd_for_window(window, "OrbitStart Bubble")?;
+    let mut should_start = false;
+    {
+        let mut state = bubble_input_state()
+            .lock()
+            .map_err(|_| "Failed to lock bubble input state".to_string())?;
+        state.hwnd = hwnd as usize;
+        state.app = Some(app.clone());
+        state.drag = None;
+        if !state.worker_started {
+            state.worker_started = true;
+            should_start = true;
+        }
+    }
+    if should_start {
+        std::thread::spawn(bubble_input_worker);
+    }
     Ok(())
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
-fn apply_round_rect_region(_window: &tauri::WebviewWindow) -> Result<(), String> {
-    // Return Ok(()) to let Tauri's native window transparency handle click-through
-    // and prevent Windows from drawing native white border frames.
+fn deactivate_bubble_input() {
+    if let Ok(mut state) = bubble_input_state().lock() {
+        state.hwnd = 0;
+        state.app = None;
+        state.drag = None;
+    }
+}
+
+#[cfg(all(desktop, not(target_os = "windows")))]
+fn deactivate_bubble_input() {}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn bubble_input_worker() {
+    let mut left_was_down = false;
+    let mut right_was_down = false;
+
+    loop {
+        let (bubble_hwnd, app) = bubble_input_state()
+            .lock()
+            .ok()
+            .map(|state| (state.hwnd as win32::HWND, state.app.clone()))
+            .unwrap_or((std::ptr::null_mut(), None));
+
+        if bubble_hwnd.is_null() || unsafe { win32::IsWindowVisible(bubble_hwnd) == 0 } {
+            left_was_down = false;
+            right_was_down = false;
+            if let Ok(mut state) = bubble_input_state().lock() {
+                state.drag = None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            continue;
+        }
+
+        let mut point = win32::POINT::default();
+        let has_point = unsafe { win32::GetCursorPos(&mut point) != 0 };
+        let rect = current_bubble_rect(bubble_hwnd);
+        let inside = has_point
+            && rect
+                .map(|value| point_inside_bubble_region(value, point))
+                .unwrap_or(false);
+        let left_down = unsafe { (win32::GetAsyncKeyState(VK_LBUTTON) as u16 & 0x8000) != 0 };
+        let right_down = unsafe { (win32::GetAsyncKeyState(VK_RBUTTON) as u16 & 0x8000) != 0 };
+
+        if left_down && !left_was_down && inside {
+            if let Some(start_rect) = rect {
+                if let Ok(mut state) = bubble_input_state().lock() {
+                    state.drag = Some(BubbleInputDrag {
+                        start_cursor: point,
+                        start_rect,
+                        moved: false,
+                    });
+                }
+            }
+        }
+
+        if left_down {
+            if let Ok(mut state) = bubble_input_state().lock() {
+                if let Some(mut drag) = state.drag {
+                    let dx = point.x - drag.start_cursor.x;
+                    let dy = point.y - drag.start_cursor.y;
+                    if dx.abs() > 3 || dy.abs() > 3 {
+                        drag.moved = true;
+                    }
+                    if drag.moved {
+                        unsafe {
+                            win32::SetWindowPos(
+                                bubble_hwnd,
+                                std::ptr::null_mut(),
+                                drag.start_rect.left + dx,
+                                drag.start_rect.top + dy,
+                                0,
+                                0,
+                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                            );
+                        }
+                    }
+                    state.drag = Some(drag);
+                }
+            }
+        }
+
+        if !left_down && left_was_down {
+            let (drag, release_app) = if let Ok(mut state) = bubble_input_state().lock() {
+                (state.drag.take(), state.app.clone())
+            } else {
+                (None, app.clone())
+            };
+            if let Some(drag) = drag {
+                if let Some(app) = release_app {
+                    if drag.moved {
+                        run_on_main_from_bubble_input(app, |app| {
+                            if let Some(bubble) = app.get_webview_window("floating-bubble") {
+                                if let Ok(pos) = bubble.outer_position() {
+                                    let align = if pos.x < 1000 { "left" } else { "right" };
+                                    let _ = bubble.emit(
+                                        "orbit://bubble-position-changed",
+                                        serde_json::json!({ "x": pos.x, "y": pos.y, "align": align }),
+                                    );
+                                }
+                            }
+                        });
+                    } else {
+                        run_on_main_from_bubble_input(app, |app| show_and_focus_main(&app));
+                    }
+                }
+            }
+        }
+
+        if right_down && !right_was_down && inside {
+            if let Some(app) = app {
+                run_on_main_from_bubble_input(app, |app| {
+                    let _ = show_bubble_menu_window(app);
+                });
+            }
+        }
+
+        left_was_down = left_down;
+        right_was_down = right_down;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[cfg(all(desktop, not(target_os = "windows")))]
+fn activate_bubble_input(
+    _app: &tauri::AppHandle,
+    _window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn apply_elliptic_region(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let target_hwnd = top_level_hwnd_for_window(window, "OrbitStart Bubble")?;
+    let size = window
+        .outer_size()
+        .map_err(|error| format!("Failed to read bubble size: {error}"))?;
+    let width = size.width as i32;
+    let height = size.height as i32;
+    if width <= 0 || height <= 0 {
+        return Ok(());
+    }
+
+    let diameter = width.min(height).max(1);
+    let x = (width - diameter) / 2;
+    let y = (height - diameter) / 2;
+    let region = unsafe { win32::CreateEllipticRgn(x, y, x + diameter, y + diameter) };
+    if region.is_null() {
+        return Err("Failed to create bubble window region".to_string());
+    }
+
+    let result = unsafe { win32::SetWindowRgn(target_hwnd, region, 1) };
+    if result == 0 {
+        unsafe {
+            win32::DeleteObject(region);
+        }
+        return Err("Failed to apply bubble window region".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(all(desktop, target_os = "windows"))]
+fn apply_round_rect_region(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let target_hwnd = top_level_hwnd_for_window(window, "OrbitStart Bubble Menu")?;
+    let size = window
+        .outer_size()
+        .map_err(|error| format!("Failed to read bubble menu size: {error}"))?;
+    let width = size.width as i32;
+    let height = size.height as i32;
+    if width <= 0 || height <= 0 {
+        return Ok(());
+    }
+
+    let radius = height.max(1);
+    let region = unsafe { win32::CreateRoundRectRgn(0, 0, width, height, radius, radius) };
+    if region.is_null() {
+        return Err("Failed to create bubble menu window region".to_string());
+    }
+
+    let result = unsafe { win32::SetWindowRgn(target_hwnd, region, 1) };
+    if result == 0 {
+        unsafe {
+            win32::DeleteObject(region);
+        }
+        return Err("Failed to apply bubble menu window region".to_string());
+    }
     Ok(())
 }
 
@@ -5856,102 +6246,142 @@ fn apply_elliptic_region(_window: &tauri::WebviewWindow) -> Result<(), String> {
 #[cfg(all(desktop, not(target_os = "windows")))]
 fn apply_round_rect_region(_window: &tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(desktop)]
+fn refresh_bubble_shapes(app: &tauri::AppHandle) {
+    if let Some(bubble) = app.get_webview_window("floating-bubble") {
+        let _ = apply_elliptic_region(&bubble);
+        let _ = activate_bubble_input(app, &bubble);
+    }
+    if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
+        let _ = apply_round_rect_region(&menu);
+    }
+}
+
+#[cfg(desktop)]
+fn schedule_bubble_shape_refresh(app: &tauri::AppHandle) {
+    for delay_ms in [120_u64, 360, 900] {
+        let app_for_thread = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            let app_for_main = app_for_thread.clone();
+            let _ = app_for_thread.run_on_main_thread(move || {
+                refresh_bubble_shapes(&app_for_main);
+            });
+        });
+    }
 }
 
 #[cfg(desktop)]
 fn is_bubble_enabled_and_show_on_hide() -> bool {
-    if let Ok(conn) = open_db() {
-        let enabled = setting(&conn, "bubble_enabled", "false").unwrap_or_default() == "true";
-        let show_on_hide = setting(&conn, "bubble_show_when_main_hidden", "true").unwrap_or_default() == "true";
-        enabled && show_on_hide
-    } else {
-        false
-    }
+    false
 }
 
 #[cfg(desktop)]
-fn create_bubble_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
-    if let Some(bubble) = app.get_webview_window("floating-bubble") {
-        return Ok(bubble);
-    }
-    let conn = open_db()?;
-    let always_on_top = setting(&conn, "bubble_always_on_top", "true").unwrap_or_default() == "true";
-    let size_val = setting(&conn, "bubble_size", "64")
-        .unwrap_or_default()
-        .parse::<f64>()
-        .unwrap_or(64.0);
-    
-    let url = WebviewUrl::App("index.html?label=floating-bubble".into());
-    let bubble = WebviewWindowBuilder::new(app, "floating-bubble", url)
-        .title("OrbitStart Bubble")
-        .inner_size(size_val, size_val)
-        .decorations(false)
-        .resizable(false)
-        .transparent(true)
-        .always_on_top(always_on_top)
-        .skip_taskbar(true)
-        .visible(true)
-        .build()
-        .map_err(|error| format!("Failed to create bubble window: {error}"))?;
-        
-    let _ = apply_elliptic_region(&bubble);
-        
-    Ok(bubble)
+fn create_bubble_window(_app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    Err("Disabled".into())
 }
 
 #[cfg(desktop)]
-fn create_bubble_menu_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
-    if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
-        return Ok(menu);
-    }
-    let conn = open_db()?;
-    let always_on_top = setting(&conn, "bubble_always_on_top", "true").unwrap_or_default() == "true";
-    
-    let url = WebviewUrl::App("index.html?label=floating-bubble-menu".into());
-    let menu = WebviewWindowBuilder::new(app, "floating-bubble-menu", url)
-        .title("OrbitStart Bubble Menu")
-        .inner_size(340.0, 72.0)
-        .decorations(false)
-        .resizable(false)
-        .transparent(true)
-        .always_on_top(always_on_top)
-        .skip_taskbar(true)
-        .visible(false)
-        .build()
-        .map_err(|error| format!("Failed to create bubble menu window: {error}"))?;
-        
-    let _ = apply_round_rect_region(&menu);
-    
-    Ok(menu)
+fn create_bubble_menu_window(_app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    Err("Disabled".into())
 }
 
 #[cfg(desktop)]
-fn show_bubble_window(app: &tauri::AppHandle) {
-    if let Some(bubble) = app.get_webview_window("floating-bubble") {
-        let _ = bubble.show();
-        let _ = bubble.unminimize();
-        let _ = bubble.set_focus();
-    } else if let Ok(bubble) = create_bubble_window(app) {
-        let _ = bubble.show();
-        let _ = bubble.unminimize();
-        let _ = bubble.set_focus();
-    }
+fn show_bubble_window(_app: &tauri::AppHandle) {
+    // Completely disabled
 }
 
 #[cfg(desktop)]
 fn hide_bubble_window(app: &tauri::AppHandle) {
+    deactivate_bubble_input();
     if let Some(bubble) = app.get_webview_window("floating-bubble") {
-        let _ = bubble.close();
+        let _ = bubble.destroy();
     }
     if let Some(menu) = app.get_webview_window("floating-bubble-menu") {
-        let _ = menu.close();
+        let _ = menu.destroy();
+    }
+}
+
+#[tauri::command]
+fn refresh_bubble_native_window(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        refresh_bubble_shapes(&app);
+        schedule_bubble_shape_refresh(&app);
+    }
+    Ok(())
+}
+
+#[cfg(desktop)]
+fn close_behavior_setting() -> String {
+    open_db()
+        .and_then(|conn| setting(&conn, "close_behavior", "tray"))
+        .unwrap_or_else(|_| "tray".to_string())
+}
+
+#[cfg(desktop)]
+fn hide_main_and_maybe_show_bubble(app: &tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    if is_bubble_enabled_and_show_on_hide() {
+        show_bubble_window(app);
+    } else {
+        hide_bubble_window(app);
     }
 }
 
 #[tauri::command]
 fn open_bubble_window(app: tauri::AppHandle) -> Result<(), String> {
-    show_bubble_window(&app);
-    Ok(())
+    let app_for_main = app.clone();
+    app.run_on_main_thread(move || show_bubble_window(&app_for_main))
+        .map_err(|error| format!("Failed to open bubble window: {error}"))
+}
+
+#[tauri::command]
+fn close_or_hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if close_behavior_setting() == "exit" {
+        app.exit(0);
+        return Ok(());
+    }
+    let app_for_main = app.clone();
+    app.run_on_main_thread(move || hide_main_and_maybe_show_bubble(&app_for_main))
+        .map_err(|error| format!("Failed to hide main window: {error}"))
+}
+
+#[tauri::command]
+fn close_current_window(window: tauri::Window, app: tauri::AppHandle) -> Result<(), String> {
+    if window.label() == "main" {
+        return close_or_hide_main_window(app);
+    }
+    window
+        .close()
+        .map_err(|error| format!("Failed to close window: {error}"))
+}
+
+#[tauri::command]
+fn minimize_current_window(window: tauri::Window) -> Result<(), String> {
+    window
+        .minimize()
+        .map_err(|error| format!("Failed to minimize window: {error}"))
+}
+
+#[tauri::command]
+fn toggle_maximize_current_window(window: tauri::Window) -> Result<(), String> {
+    let is_maximized = window
+        .is_maximized()
+        .map_err(|error| format!("Failed to read window maximized state: {error}"))?;
+    if is_maximized {
+        window
+            .unmaximize()
+            .map_err(|error| format!("Failed to restore window: {error}"))
+    } else {
+        window
+            .maximize()
+            .map_err(|error| format!("Failed to maximize window: {error}"))
+    }
 }
 
 #[tauri::command]
@@ -5969,23 +6399,29 @@ fn log_frontend_error(message: String) {
 
 #[tauri::command]
 fn enter_floating_mode(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
-    }
-    show_bubble_window(&app);
-    Ok(())
+    let app_for_main = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(main) = app_for_main.get_webview_window("main") {
+            let _ = main.hide();
+        }
+        show_bubble_window(&app_for_main);
+    })
+    .map_err(|error| format!("Failed to enter floating mode: {error}"))
 }
 
 #[tauri::command]
 fn exit_floating_mode_and_show_main(app: tauri::AppHandle, action: Option<String>) -> Result<(), String> {
-    hide_bubble_window(&app);
-    show_and_focus_main(&app);
-    if let Some(main) = app.get_webview_window("main") {
-        if let Some(act) = action {
-            let _ = main.emit("orbit://bubble-action", act);
+    let app_for_main = app.clone();
+    app.run_on_main_thread(move || {
+        hide_bubble_window(&app_for_main);
+        show_and_focus_main(&app_for_main);
+        if let Some(main) = app_for_main.get_webview_window("main") {
+            if let Some(act) = action {
+                let _ = main.emit("orbit://bubble-action", act);
+            }
         }
-    }
-    Ok(())
+    })
+    .map_err(|error| format!("Failed to exit floating mode: {error}"))
 }
 
 #[tauri::command]
@@ -6006,12 +6442,16 @@ fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
         let menu = if let Some(m) = app.get_webview_window("floating-bubble-menu") {
             let _ = m.show();
             let _ = m.unminimize();
+            refresh_bubble_shapes(&app);
+            schedule_bubble_shape_refresh(&app);
             let _ = m.set_focus();
             m
         } else {
             let m = create_bubble_menu_window(&app)?;
             let _ = m.show();
             let _ = m.unminimize();
+            refresh_bubble_shapes(&app);
+            schedule_bubble_shape_refresh(&app);
             let _ = m.set_focus();
             m
         };
@@ -6073,6 +6513,10 @@ fn hide_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
 fn set_bubble_setting(app: tauri::AppHandle, key: String, value: String) -> Result<CatalogSnapshot, String> {
     let conn = open_db()?;
     set_setting_value(&conn, &key, &value)?;
+
+    if key == "bubble_enabled" && value != "true" {
+        hide_bubble_window(&app);
+    }
     
     // Apply immediately to bubble window if it exists
     if let Some(bubble) = app.get_webview_window("floating-bubble") {
@@ -6149,16 +6593,10 @@ fn handle_main_window_close(window: &tauri::Window, event: &WindowEvent) {
         return;
     };
     api.prevent_close();
-    let behavior = open_db()
-        .and_then(|conn| setting(&conn, "close_behavior", "tray"))
-        .unwrap_or_else(|_| "tray".to_string());
-    if behavior == "exit" {
+    if close_behavior_setting() == "exit" {
         window.app_handle().exit(0);
     } else {
-        let _ = window.hide();
-        if is_bubble_enabled_and_show_on_hide() {
-            show_bubble_window(window.app_handle());
-        }
+        hide_main_and_maybe_show_bubble(window.app_handle());
     }
 }
 
@@ -6300,14 +6738,14 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
 #[cfg(desktop)]
 fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let menu = MenuBuilder::new(app)
-        .text("show", "Show / Hide OrbitStart")
-        .text("settings", "Open Settings")
-        .text("refresh", "Refresh Resource Index")
-        .text("safe-mode", "Toggle Safe Mode")
+        .text("show", "显示 / 隐藏 OrbitStart")
+        .text("settings", "打开设置")
+        .text("refresh", "刷新资源索引")
+        .text("safe-mode", "切换安全模式")
         .separator()
-        .text("data", "Open Data Directory")
+        .text("data", "打开数据目录")
         .separator()
-        .text("quit", "Quit")
+        .text("quit", "退出")
         .build()?;
 
     let mut builder = TrayIconBuilder::with_id("orbitstart")
@@ -6881,6 +7319,11 @@ pub fn run() {
             get_autostart_enabled,
             set_autostart_enabled,
             open_bubble_window,
+            refresh_bubble_native_window,
+            close_or_hide_main_window,
+            close_current_window,
+            minimize_current_window,
+            toggle_maximize_current_window,
             enter_floating_mode,
             exit_floating_mode_and_show_main,
             set_bubble_setting,

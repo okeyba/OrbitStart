@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { LogicalPosition } from "@tauri-apps/api/dpi";
+import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { emit, listen } from "@tauri-apps/api/event";
-import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import { availableMonitors, currentMonitor, cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { Clock, FolderKanban, Plus, Search, Settings } from "lucide-react";
 import type { AppSettings } from "../../types";
 import { exitFloatingModeAndShowMain } from "../../lib/native";
@@ -28,7 +28,7 @@ async function animateWindowPosition(
       const currentY = startY + (endY - startY) * ease;
 
       try {
-        await appWin.setPosition(new LogicalPosition(currentX, currentY));
+        await appWin.setPosition(new PhysicalPosition(Math.round(currentX), Math.round(currentY)));
       } catch {
         resolve();
         return;
@@ -61,6 +61,108 @@ async function logBubbleError(message: string) {
   } catch {
     console.error(message);
   }
+}
+
+type BubbleAlign = "left" | "right";
+
+function clampNumber(value: number, min: number, max: number) {
+  if (max < min) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+function monitorPhysicalBounds(monitor: {
+  position: { x: number; y: number };
+  size: { width: number; height: number };
+  scaleFactor: number;
+}) {
+  return {
+    x: monitor.position.x,
+    y: monitor.position.y,
+    width: monitor.size.width,
+    height: monitor.size.height,
+  };
+}
+
+function clampBubbleToMonitor(
+  x: number,
+  y: number,
+  windowWidth: number,
+  windowHeight: number,
+  monitor: {
+    position: { x: number; y: number };
+    size: { width: number; height: number };
+    scaleFactor: number;
+  }
+): { x: number; y: number; align: BubbleAlign } {
+  const bounds = monitorPhysicalBounds(monitor);
+  const margin = Math.round(8 * (monitor.scaleFactor || 1));
+  const minX = bounds.x + margin;
+  const maxX = bounds.x + bounds.width - windowWidth - margin;
+  const minY = bounds.y + margin;
+  const maxY = bounds.y + bounds.height - windowHeight - margin;
+  const fallbackX = bounds.x + Math.max(0, (bounds.width - windowWidth) / 2);
+  const fallbackY = bounds.y + Math.max(0, (bounds.height - windowHeight) / 2);
+  const nextX = maxX >= minX ? clampNumber(x, minX, maxX) : fallbackX;
+  const nextY = maxY >= minY ? clampNumber(y, minY, maxY) : fallbackY;
+  const align = nextX + windowWidth / 2 < bounds.x + bounds.width / 2 ? "left" : "right";
+  return { x: nextX, y: nextY, align };
+}
+
+async function getBubbleOuterSize(appWin: any, sizeValue: number, monitor: { scaleFactor: number } | null) {
+  try {
+    const size = await appWin.outerSize();
+    if (Number.isFinite(size?.width) && Number.isFinite(size?.height) && size.width > 0 && size.height > 0) {
+      return { width: Number(size.width), height: Number(size.height) };
+    }
+  } catch {
+    // Fall through to a conservative fallback.
+  }
+  const scaleFactor = monitor?.scaleFactor || 1;
+  const fallbackSize = Math.round(sizeValue * scaleFactor);
+  return { width: fallbackSize, height: fallbackSize };
+}
+
+async function pickMonitorForBubblePosition(x: number, y: number, windowWidth: number, windowHeight: number) {
+  let monitors: Awaited<ReturnType<typeof availableMonitors>> = [];
+  try {
+    monitors = await availableMonitors();
+  } catch {
+    monitors = [];
+  }
+
+  const centerX = x + windowWidth / 2;
+  const centerY = y + windowHeight / 2;
+  const matchingMonitor = monitors.find((monitor) => {
+    const bounds = monitorPhysicalBounds(monitor);
+    return (
+      centerX >= bounds.x &&
+      centerX <= bounds.x + bounds.width &&
+      centerY >= bounds.y &&
+      centerY <= bounds.y + bounds.height
+    );
+  });
+  if (matchingMonitor) return matchingMonitor;
+
+  try {
+    return (await currentMonitor()) ?? monitors[0] ?? null;
+  } catch {
+    return monitors[0] ?? null;
+  }
+}
+
+function readSavedBubblePosition(): { x: number; y: number } | null {
+  const savedPos = localStorage.getItem("orbitstart_bubble_position");
+  if (!savedPos) return null;
+  try {
+    const pos = JSON.parse(savedPos);
+    if (Number.isFinite(pos?.x) && Number.isFinite(pos?.y)) {
+      return { x: Number(pos.x), y: Number(pos.y) };
+    }
+  } catch (e) {
+    console.error("Failed to parse saved bubble position", e);
+  }
+  localStorage.removeItem("orbitstart_bubble_position");
+  return null;
 }
 
 export function FloatingBubble({ settings }: FloatingBubbleProps) {
@@ -139,50 +241,48 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
 
   useEffect(() => {
     const savedAlign = localStorage.getItem("orbitstart_bubble_align");
-    const savedPos = localStorage.getItem("orbitstart_bubble_position");
 
     if (savedAlign === "left" || savedAlign === "right") {
       setAlign(savedAlign);
     }
 
     const appWin = getCurrentWindow() as any;
-    if (savedPos) {
+    const savedPosition = readSavedBubblePosition();
+    const runInit = async () => {
       try {
-        const pos = JSON.parse(savedPos);
-        appWin.setPosition(new LogicalPosition(pos.x, pos.y)).catch(() => undefined);
-      } catch (e) {
-        console.error("Failed to parse saved bubble position", e);
-      }
-    } else {
-      const runInit = async () => {
-        try {
-          const monitor = await currentMonitor();
+        if (savedPosition) {
+          const probeMonitor = await pickMonitorForBubblePosition(savedPosition.x, savedPosition.y, sizeValue, sizeValue);
+          const outerSize = await getBubbleOuterSize(appWin, sizeValue, probeMonitor);
+          const monitor = await pickMonitorForBubblePosition(savedPosition.x, savedPosition.y, outerSize.width, outerSize.height);
           if (monitor) {
-            const scaleFactor = monitor.scaleFactor;
-            const monitorX = monitor.position.x / scaleFactor;
-            const monitorWidth = monitor.size.width / scaleFactor;
-            const monitorY = monitor.position.y / scaleFactor;
-            const monitorHeight = monitor.size.height / scaleFactor;
-
-            const defaultX = monitorX + monitorWidth - sizeValue - 18;
-            const defaultY = Math.max(
-              monitorY + 10,
-              Math.min(
-                monitorY + monitorHeight - sizeValue - 10,
-                monitorY + monitorHeight * 0.7 - sizeValue / 2
-              )
-            );
-            await appWin.setPosition(new LogicalPosition(defaultX, defaultY));
-            setAlign("right");
-            localStorage.setItem("orbitstart_bubble_align", "right");
-            localStorage.setItem("orbitstart_bubble_position", JSON.stringify({ x: defaultX, y: defaultY }));
+            const next = clampBubbleToMonitor(savedPosition.x, savedPosition.y, outerSize.width, outerSize.height, monitor);
+            await appWin.setPosition(new PhysicalPosition(Math.round(next.x), Math.round(next.y)));
+            setAlign(next.align);
+            localStorage.setItem("orbitstart_bubble_align", next.align);
+            localStorage.setItem("orbitstart_bubble_position", JSON.stringify({ x: next.x, y: next.y }));
+            return;
           }
-        } catch (err) {
-          console.error("Failed to initialize bubble window position:", err);
+          await appWin.setPosition(new PhysicalPosition(Math.round(savedPosition.x), Math.round(savedPosition.y)));
+          return;
         }
-      };
-      void runInit();
-    }
+
+        const monitor = await currentMonitor();
+        if (monitor) {
+          const bounds = monitorPhysicalBounds(monitor);
+          const outerSize = await getBubbleOuterSize(appWin, sizeValue, monitor);
+          const defaultX = bounds.x + bounds.width - outerSize.width - Math.round(18 * (monitor.scaleFactor || 1));
+          const defaultY = bounds.y + bounds.height * 0.7 - outerSize.height / 2;
+          const next = clampBubbleToMonitor(defaultX, defaultY, outerSize.width, outerSize.height, monitor);
+          await appWin.setPosition(new PhysicalPosition(Math.round(next.x), Math.round(next.y)));
+          setAlign(next.align);
+          localStorage.setItem("orbitstart_bubble_align", next.align);
+          localStorage.setItem("orbitstart_bubble_position", JSON.stringify({ x: next.x, y: next.y }));
+        }
+      } catch (err) {
+        console.error("Failed to initialize bubble window position:", err);
+      }
+    };
+    void runInit();
 
     appWin.setAlwaysOnTop(alwaysOnTop).catch(() => undefined);
   }, [alwaysOnTop, sizeValue]);
@@ -190,11 +290,21 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
   useEffect(() => {
     const preventDefault = (e: MouseEvent) => e.preventDefault();
     window.addEventListener("contextmenu", preventDefault);
+    void invoke("refresh_bubble_native_window").catch((error) => {
+      void logBubbleError(`refresh_bubble_native_window failed: ${String(error)}`);
+    });
+    const refreshTimer = window.setTimeout(() => {
+      void invoke("refresh_bubble_native_window").catch(() => undefined);
+    }, 250);
 
     let unlistenReset: (() => void) | undefined;
-    listen("orbit://bubble-reset-position", () => {
+    listen<{ x?: number; y?: number }>("orbit://bubble-reset-position", (event) => {
       setAlign("right");
       localStorage.setItem("orbitstart_bubble_align", "right");
+      const payload = event.payload;
+      if (payload && Number.isFinite(payload.x) && Number.isFinite(payload.y)) {
+        localStorage.setItem("orbitstart_bubble_position", JSON.stringify({ x: payload.x, y: payload.y }));
+      }
     }).then((un) => {
       unlistenReset = un;
     });
@@ -203,6 +313,7 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
       clearTimer(showMenuTimerRef);
       clearTimer(hideMenuTimerRef);
       void invoke("hide_bubble_menu_window").catch(() => undefined);
+      window.clearTimeout(refreshTimer);
       window.removeEventListener("contextmenu", preventDefault);
       unlistenReset?.();
     };
@@ -257,8 +368,15 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
   }
 
   const handlePointerDown = async (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
     e.preventDefault();
+    if (e.button === 2) {
+      bubbleHoveredRef.current = true;
+      setIsMainBubbleHovered(true);
+      showMenuNow();
+      return;
+    }
+    if (e.button !== 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
     clearTimer(showMenuTimerRef);
     bubbleHoveredRef.current = false;
     setIsMainBubbleHovered(false);
@@ -269,57 +387,28 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
       isDragging: true,
       startScreenX: e.screenX,
       startScreenY: e.screenY,
-      startWindowX: 0,
-      startWindowY: 0,
+      startWindowX: Number.NaN,
+      startWindowY: Number.NaN,
       scaleFactor: 1,
       hasMoved: false,
     };
-
     try {
       const startPos = await appWin.outerPosition();
-      await appWin.startDragging();
-      const endPos = await appWin.outerPosition();
-      const moved = Math.abs(endPos.x - startPos.x) > 4 || Math.abs(endPos.y - startPos.y) > 4;
-
-      if (!moved) {
-        await exitFloatingModeAndShowMain();
-        return;
-      }
-
-      const monitor = await currentMonitor();
-      if (monitor) {
-        const sf = monitor.scaleFactor;
-        const currentX = endPos.x / sf;
-        const currentY = endPos.y / sf;
-        const monitorX = monitor.position.x / sf;
-        const monitorWidth = monitor.size.width / sf;
-        const monitorY = monitor.position.y / sf;
-        const monitorHeight = monitor.size.height / sf;
-        const centerX = currentX + sizeValue / 2;
-        const monitorCenterX = monitorX + monitorWidth / 2;
-        const isLeft = centerX < monitorCenterX;
-        const snapX = isLeft ? monitorX + 8 : (monitorX + monitorWidth - sizeValue - 8);
-        const minY = monitorY + 10;
-        const maxY = monitorY + monitorHeight - sizeValue - 10;
-        const snapY = Math.max(minY, Math.min(maxY, currentY));
-
-        if (snapToEdge) {
-          await animateWindowPosition(appWin, currentX, currentY, snapX, snapY, 120);
-        }
-
-        const newAlign = isLeft ? "left" : "right";
-        const savedX = snapToEdge ? snapX : currentX;
-        const savedY = snapToEdge ? snapY : currentY;
-        setAlign(newAlign);
-        localStorage.setItem("orbitstart_bubble_align", newAlign);
-        localStorage.setItem("orbitstart_bubble_position", JSON.stringify({ x: savedX, y: savedY }));
+      const startCursor = await cursorPosition();
+      if (dragRef.current?.isDragging) {
+        dragRef.current = {
+          ...dragRef.current,
+          startScreenX: startCursor.x,
+          startScreenY: startCursor.y,
+          startWindowX: startPos.x,
+          startWindowY: startPos.y,
+        };
       }
     } catch (error) {
+      dragRef.current = null;
       await invoke("begin_bubble_drag").catch((fallbackError) => {
         void logBubbleError(`bubble drag failed: ${String(error)}; fallback failed: ${String(fallbackError)}`);
       });
-    } finally {
-      dragRef.current = null;
     }
   };
 
@@ -330,19 +419,24 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
     }
     if (!dragRef.current || !dragRef.current.isDragging) return;
 
-    const deltaX = e.screenX - dragRef.current.startScreenX;
-    const deltaY = e.screenY - dragRef.current.startScreenY;
+    const currentCursor = await cursorPosition();
+    const deltaX = currentCursor.x - dragRef.current.startScreenX;
+    const deltaY = currentCursor.y - dragRef.current.startScreenY;
 
     if (Math.abs(deltaX) > 4 || Math.abs(deltaY) > 4) {
       dragRef.current.hasMoved = true;
     }
 
-    if (dragRef.current.hasMoved) {
+    if (
+      dragRef.current.hasMoved &&
+      Number.isFinite(dragRef.current.startWindowX) &&
+      Number.isFinite(dragRef.current.startWindowY)
+    ) {
       const newX = dragRef.current.startWindowX + deltaX;
       const newY = dragRef.current.startWindowY + deltaY;
 
       const appWin = getCurrentWindow() as any;
-      await appWin.setPosition(new LogicalPosition(newX, newY));
+      await appWin.setPosition(new PhysicalPosition(Math.round(newX), Math.round(newY)));
     }
   };
 
@@ -364,33 +458,25 @@ export function FloatingBubble({ settings }: FloatingBubbleProps) {
       const monitor = await currentMonitor();
       if (monitor) {
         const pos = await appWin.outerPosition();
-        const sf = monitor.scaleFactor;
-        const currentX = pos.x / sf;
-        const currentY = pos.y / sf;
-
-        const monitorX = monitor.position.x / sf;
-        const monitorWidth = monitor.size.width / sf;
-        const monitorY = monitor.position.y / sf;
-        const monitorHeight = monitor.size.height / sf;
-
-        const centerX = currentX + sizeValue / 2;
-        const monitorCenterX = monitorX + monitorWidth / 2;
+        const outerSize = await getBubbleOuterSize(appWin, sizeValue, monitor);
+        const bounds = monitorPhysicalBounds(monitor);
+        const margin = Math.round(8 * (monitor.scaleFactor || 1));
+        const centerX = pos.x + outerSize.width / 2;
+        const monitorCenterX = bounds.x + bounds.width / 2;
         const isLeft = centerX < monitorCenterX;
 
-        const snapX = isLeft ? monitorX + 8 : (monitorX + monitorWidth - sizeValue - 8);
-        const minY = monitorY + 10;
-        const maxY = monitorY + monitorHeight - sizeValue - 10;
-        const snapY = Math.max(minY, Math.min(maxY, currentY));
+        const rawX = isLeft ? bounds.x + margin : (bounds.x + bounds.width - outerSize.width - margin);
+        const rawY = pos.y;
+        const next = clampBubbleToMonitor(rawX, rawY, outerSize.width, outerSize.height, monitor);
 
         if (snapToEdge) {
-          await animateWindowPosition(appWin, currentX, currentY, snapX, snapY, 160);
+          await animateWindowPosition(appWin, pos.x, pos.y, next.x, next.y, 160);
         }
 
-        const newAlign = isLeft ? "left" : "right";
-        const savedX = snapToEdge ? snapX : currentX;
-        const savedY = snapToEdge ? snapY : currentY;
-        setAlign(newAlign);
-        localStorage.setItem("orbitstart_bubble_align", newAlign);
+        const savedX = snapToEdge ? next.x : pos.x;
+        const savedY = snapToEdge ? next.y : pos.y;
+        setAlign(next.align);
+        localStorage.setItem("orbitstart_bubble_align", next.align);
         localStorage.setItem("orbitstart_bubble_position", JSON.stringify({ x: savedX, y: savedY }));
       }
     } else {

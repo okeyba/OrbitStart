@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export function getAppWindow() {
@@ -15,15 +16,15 @@ export function runWindowAction(action: (window: NonNullable<ReturnType<typeof g
 }
 
 export function minimizeWindow() {
-  runWindowAction((window) => window.minimize());
+  void invoke("minimize_current_window").catch(() => undefined);
 }
 
 export function toggleMaximizeWindow() {
-  runWindowAction((window) => window.toggleMaximize());
+  void invoke("toggle_maximize_current_window").catch(() => undefined);
 }
 
 export function closeWindow() {
-  runWindowAction((window) => window.close());
+  void invoke("close_current_window").catch(() => undefined);
 }
 
 export function startWindowDrag() {
