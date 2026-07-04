@@ -263,19 +263,11 @@ export async function createItemsFromPaths(paths: string[]): Promise<OrbitItem[]
 }
 
 export async function pickResourceInput(mode: "file" | "folder"): Promise<OrbitItemInput | null> {
-  try {
-    return await invokeNative<OrbitItemInput | null>("pick_resource_input", { mode });
-  } catch {
-    return null;
-  }
+  return await invokeNative<OrbitItemInput | null>("pick_resource_input", { mode });
 }
 
 export async function pickIconImage(): Promise<string | null> {
-  try {
-    return await invokeNative<string | null>("pick_icon_image");
-  } catch {
-    return null;
-  }
+  return await invokeNative<string | null>("pick_icon_image");
 }
 
 export async function createGroup(title: string): Promise<Phase0Snapshot["groups"]> {
@@ -813,6 +805,20 @@ export async function setDisplayMode(mode: "simple" | "detailed"): Promise<Phase
   }
 }
 
+export async function setResourceMode(mode: "hierarchical" | "single"): Promise<Phase0Snapshot> {
+  try {
+    return await invokeNative<Phase0Snapshot>("set_resource_mode", { mode });
+  } catch {
+    const snapshot = readBrowserSnapshot();
+    const next = {
+      ...snapshot,
+      settings: { ...snapshot.settings, resourceMode: mode }
+    };
+    writeBrowserSnapshot(next);
+    return next;
+  }
+}
+
 export async function setHotkeyBehavior(behavior: "command_bar" | "open_only"): Promise<Phase0Snapshot> {
   try {
     return await invokeNative<Phase0Snapshot>("set_hotkey_behavior", { behavior });
@@ -1073,4 +1079,3 @@ export async function exitFloatingModeAndShowMain(action?: string): Promise<void
     console.log("Mock exit floating mode and show main with action:", action);
   }
 }
-

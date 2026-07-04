@@ -1,4 +1,4 @@
-export type ContextMenuKind = "resource" | "blank" | "edit" | "group";
+export type ContextMenuKind = "resource" | "blank" | "edit" | "group" | "folder";
 export type EditMenuCommand = "cut" | "copy" | "paste" | "select-all";
 
 export interface ContextMenuState {
@@ -7,6 +7,7 @@ export interface ContextMenuState {
   y: number;
   resourceId?: string;
   groupId?: string;
+  folderId?: string;
 }
 
 export function isEditableElement(target: EventTarget | null): target is HTMLElement {
@@ -29,6 +30,11 @@ export function groupIdFromTarget(target: EventTarget | null) {
   return target.closest("[data-group-id]")?.getAttribute("data-group-id") ?? null;
 }
 
+export function folderIdFromTarget(target: EventTarget | null) {
+  if (!(target instanceof Element)) return null;
+  return target.closest("[data-folder-id]")?.getAttribute("data-folder-id") ?? null;
+}
+
 export function clampedMenuPosition(clientX: number, clientY: number, width = 240, height = 320) {
   const margin = 10;
   const x = Math.min(Math.max(margin, clientX), Math.max(margin, window.innerWidth - width - margin));
@@ -40,11 +46,13 @@ type MenuPointerEvent = Pick<MouseEvent, "clientX" | "clientY" | "target">;
 
 export function contextMenuFromEvent(event: MenuPointerEvent, fallback: ContextMenuKind = "blank"): ContextMenuState {
   const resourceId = resourceIdFromTarget(event.target);
+  const folderId = folderIdFromTarget(event.target);
   const groupId = groupIdFromTarget(event.target);
   const position = clampedMenuPosition(event.clientX, event.clientY, resourceId ? 246 : 230, isEditableElement(event.target) ? 172 : 318);
   if (isEditableElement(event.target)) return { kind: "edit", ...position };
-  if (groupId) return { kind: "group", groupId, ...position };
   if (resourceId) return { kind: "resource", resourceId, ...position };
+  if (folderId) return { kind: "folder", folderId, ...position };
+  if (groupId) return { kind: "group", groupId, ...position };
   return { kind: fallback, ...position };
 }
 

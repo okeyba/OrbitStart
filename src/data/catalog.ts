@@ -944,6 +944,7 @@ export const settings: AppSettings = {
   dataDir: "local-preview",
   autoPinnedMode: false,
   displayMode: "simple",
+  resourceMode: "hierarchical",
   hotkeyBehavior: "command_bar",
   bubbleEnabled: false,
   bubbleShowWhenMainHidden: true,
@@ -975,4 +976,3 @@ export const phase0Snapshot: Phase0Snapshot = {
   settings,
   logs
 };
-

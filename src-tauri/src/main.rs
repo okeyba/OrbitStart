@@ -158,6 +158,7 @@ struct AppSettings {
     data_dir: String,
     auto_pinned_mode: bool,
     display_mode: String,
+    resource_mode: String,
     hotkey_behavior: String,
     bubble_enabled: bool,
     bubble_show_when_main_hidden: bool,
@@ -588,6 +589,7 @@ fn ensure_default_settings(conn: &Connection) -> Result<(), String> {
         ("close_behavior", "tray"),
         ("auto_pinned_mode", "false"),
         ("display_mode", "simple"),
+        ("resource_mode", "hierarchical"),
         ("hotkey_behavior", "command_bar"),
         ("bubble_enabled", "false"),
         ("bubble_show_when_main_hidden", "true"),
@@ -639,15 +641,23 @@ fn app_settings(conn: &Connection) -> Result<AppSettings, String> {
         data_dir: app_data_dir()?.to_string_lossy().to_string(),
         auto_pinned_mode: setting(conn, "auto_pinned_mode", "false")? == "true",
         display_mode: setting(conn, "display_mode", "simple")?,
+        resource_mode: setting(conn, "resource_mode", "hierarchical")?,
         hotkey_behavior: setting(conn, "hotkey_behavior", "command_bar")?,
         bubble_enabled: setting(conn, "bubble_enabled", "false")? == "true",
-        bubble_show_when_main_hidden: setting(conn, "bubble_show_when_main_hidden", "true")? == "true",
+        bubble_show_when_main_hidden: setting(conn, "bubble_show_when_main_hidden", "true")?
+            == "true",
         bubble_always_on_top: setting(conn, "bubble_always_on_top", "true")? == "true",
-        bubble_size: setting(conn, "bubble_size", "64")?.parse::<i32>().unwrap_or(64),
-        bubble_opacity: setting(conn, "bubble_opacity", "1.0")?.parse::<f64>().unwrap_or(1.0),
+        bubble_size: setting(conn, "bubble_size", "64")?
+            .parse::<i32>()
+            .unwrap_or(64),
+        bubble_opacity: setting(conn, "bubble_opacity", "1.0")?
+            .parse::<f64>()
+            .unwrap_or(1.0),
         bubble_snap_to_edge: setting(conn, "bubble_snap_to_edge", "true")? == "true",
         bubble_expand_on_hover: setting(conn, "bubble_expand_on_hover", "true")? == "true",
-        bubble_expand_delay_ms: setting(conn, "bubble_expand_delay_ms", "200")?.parse::<i32>().unwrap_or(200),
+        bubble_expand_delay_ms: setting(conn, "bubble_expand_delay_ms", "200")?
+            .parse::<i32>()
+            .unwrap_or(200),
         bubble_avoid_fullscreen: setting(conn, "bubble_avoid_fullscreen", "false")? == "true",
     })
 }
@@ -2038,6 +2048,34 @@ fn run_sta_powershell(script: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// Native file picker using tauri-plugin-dialog (replaces PowerShell-based picker).
+/// The PowerShell OpenFileDialog was hidden behind the Tauri window and silently
+/// failed for icon/resource selection. This version attaches to the Tauri window.
+fn pick_file_path_dialog(
+    app: &tauri::AppHandle,
+    title: &str,
+    extensions: &[&str],
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter(title, extensions)
+        .blocking_pick_file()
+        .map(|path| path.to_string());
+    Ok(picked)
+}
+
+fn pick_folder_path_dialog(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .blocking_pick_folder()
+        .map(|path| path.to_string());
+    Ok(picked)
+}
+
 fn pick_file_path(filter: &str, title: &str) -> Result<Option<String>, String> {
     let script = format!(
         r#"
@@ -2067,21 +2105,200 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     run_sta_powershell(script)
 }
 
-fn image_mime_type(path: &Path) -> &'static str {
-    match extension_lower(path).as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "ico" => "image/x-icon",
-        _ => "image/png",
+fn detect_image_mime_type(path: &Path, bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
     }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        return Some("image/x-icon");
+    }
+
+    let text_probe = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_lowercase();
+    let text_probe = text_probe.trim_start_matches('\u{feff}').trim_start();
+    if text_probe.starts_with("<svg") || text_probe.contains("<svg") {
+        return Some("image/svg+xml");
+    }
+
+    match extension_lower(path).as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" | "jpe" | "jfif" | "jeng" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "svg" => Some("image/svg+xml"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn raster_image_to_png_data_url(path: &Path) -> Option<String> {
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+$Path = '[PATH_PLACEHOLDER]'
+if (-not (Test-Path -LiteralPath $Path)) { exit 0 }
+$source = $null
+$icon = $null
+try {
+  $extension = [System.IO.Path]::GetExtension($Path).TrimStart('.').ToLowerInvariant()
+  if ($extension -eq 'ico') {
+    try {
+      $icon = New-Object System.Drawing.Icon($Path, 256, 256)
+    } catch {
+      $icon = New-Object System.Drawing.Icon($Path)
+    }
+    $source = $icon.ToBitmap()
+  } else {
+    $source = [System.Drawing.Image]::FromFile($Path)
+  }
+
+  if (-not $source -or $source.Width -lt 1 -or $source.Height -lt 1) { exit 0 }
+  $maxSize = 128.0
+  $ratio = [Math]::Min($maxSize / [double]$source.Width, $maxSize / [double]$source.Height)
+  if ($ratio -gt 1.0) { $ratio = 1.0 }
+  $width = [Math]::Max(1, [int][Math]::Round($source.Width * $ratio))
+  $height = [Math]::Max(1, [int][Math]::Round($source.Height * $ratio))
+
+  $bitmap = New-Object System.Drawing.Bitmap($width, $height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+  $graphics.Clear([System.Drawing.Color]::Transparent)
+  $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+  $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+  $graphics.DrawImage($source, 0, 0, $width, $height)
+
+  $stream = New-Object System.IO.MemoryStream
+  $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+  $bytes = $stream.ToArray()
+  [Console]::Out.Write('data:image/png;base64,' + [Convert]::ToBase64String($bytes))
+} finally {
+  if ($graphics) { $graphics.Dispose() }
+  if ($bitmap) { $bitmap.Dispose() }
+  if ($stream) { $stream.Dispose() }
+  if ($source) { $source.Dispose() }
+  if ($icon) { $icon.Dispose() }
+}
+"#;
+    let escaped_path = path.to_string_lossy().to_string().replace("'", "''");
+    let final_script = script.replace("[PATH_PLACEHOLDER]", &escaped_path);
+
+    let mut cmd = ProcessCommand::new("powershell");
+    cmd.creation_flags(0x08000000);
+    let output = cmd
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &final_script,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let icon = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if icon.starts_with("data:image/png;base64,") {
+        Some(icon)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn raster_image_to_png_data_url(_path: &Path) -> Option<String> {
+    None
 }
 
 fn image_file_to_data_url(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|error| format!("Failed to read image: {error}"))?;
+    let mime_type = detect_image_mime_type(path, &bytes).ok_or_else(|| {
+        "Unsupported image format. Please choose PNG, JPEG, ICO, GIF, WebP, or SVG.".to_string()
+    })?;
+
+    if matches!(
+        mime_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/x-icon"
+    ) {
+        if let Some(data_url) = raster_image_to_png_data_url(path) {
+            return Ok(data_url);
+        }
+    }
+
     let encoded = general_purpose::STANDARD.encode(bytes);
-    Ok(format!("data:{};base64,{}", image_mime_type(path), encoded))
+    Ok(format!("data:{mime_type};base64,{encoded}"))
+}
+
+#[cfg(test)]
+mod image_icon_tests {
+    use super::{detect_image_mime_type, image_file_to_data_url};
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn detects_image_mime_from_file_signatures() {
+        assert_eq!(
+            detect_image_mime_type(Path::new("icon.jeng"), &[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            detect_image_mime_type(
+                Path::new("icon.png"),
+                &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+            ),
+            Some("image/png")
+        );
+        assert_eq!(
+            detect_image_mime_type(Path::new("icon.ico"), &[0x00, 0x00, 0x01, 0x00, 0x01, 0x00]),
+            Some("image/x-icon")
+        );
+    }
+
+    #[test]
+    fn detects_svg_from_text_payload() {
+        assert_eq!(
+            detect_image_mime_type(
+                Path::new("icon.txt"),
+                br#"<?xml version="1.0"?><svg viewBox="0 0 8 8"></svg>"#
+            ),
+            Some("image/svg+xml")
+        );
+    }
+
+    #[test]
+    fn converts_uploaded_png_to_data_url() {
+        let mut path = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        path.push(format!("orbitstart-icon-test-{nonce}.png"));
+
+        let png_1x1: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, b'I', b'D', b'A', b'T', 0x78,
+            0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
+            0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        ];
+
+        fs::write(&path, png_1x1).expect("test png should be writable");
+        let data_url =
+            image_file_to_data_url(&path).expect("test png should convert to a data URL");
+        let _ = fs::remove_file(&path);
+
+        assert!(data_url.starts_with("data:image/png;base64,"));
+    }
 }
 
 fn item_input_from_dropped_path(path_text: &str) -> OrbitItemInput {
@@ -2845,7 +3062,10 @@ fn get_custom_hotkeys(conn: &Connection) -> Result<Vec<(String, String)>, String
 }
 
 #[tauri::command]
-fn reorder_groups(app: tauri::AppHandle, ordered_ids: Vec<String>) -> Result<Vec<OrbitGroup>, String> {
+fn reorder_groups(
+    app: tauri::AppHandle,
+    ordered_ids: Vec<String>,
+) -> Result<Vec<OrbitGroup>, String> {
     let mut conn = open_db()?;
     let tx = conn
         .transaction()
@@ -2875,7 +3095,11 @@ fn get_group_hotkeys() -> Result<std::collections::HashMap<String, String>, Stri
 }
 
 #[tauri::command]
-fn update_group_hotkey(app: tauri::AppHandle, group_id: String, new_hotkey: Option<String>) -> Result<(), String> {
+fn update_group_hotkey(
+    app: tauri::AppHandle,
+    group_id: String,
+    new_hotkey: Option<String>,
+) -> Result<(), String> {
     #[cfg(desktop)]
     {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -2887,7 +3111,10 @@ fn update_group_hotkey(app: tauri::AppHandle, group_id: String, new_hotkey: Opti
         let shortcut_manager = app.global_shortcut();
 
         if !old_hotkey.is_empty() {
-            if let Ok(old_shortcut) = old_hotkey.to_lowercase().parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            if let Ok(old_shortcut) = old_hotkey
+                .to_lowercase()
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            {
                 let _ = shortcut_manager.unregister(old_shortcut);
             }
         }
@@ -2898,7 +3125,7 @@ fn update_group_hotkey(app: tauri::AppHandle, group_id: String, new_hotkey: Opti
                     .to_lowercase()
                     .parse::<tauri_plugin_global_shortcut::Shortcut>()
                     .map_err(|e| format!("解析快捷键失败，格式可能不正确: {}", e))?;
-                
+
                 shortcut_manager
                     .register(new_shortcut)
                     .map_err(|e| format!("快捷键冲突或注册失败: {}", e))?;
@@ -2963,7 +3190,11 @@ fn get_workspace_hotkeys() -> Result<std::collections::HashMap<String, String>, 
 }
 
 #[tauri::command]
-fn update_workspace_hotkey(app: tauri::AppHandle, workspace_id: String, new_hotkey: Option<String>) -> Result<(), String> {
+fn update_workspace_hotkey(
+    app: tauri::AppHandle,
+    workspace_id: String,
+    new_hotkey: Option<String>,
+) -> Result<(), String> {
     #[cfg(desktop)]
     {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -2975,7 +3206,10 @@ fn update_workspace_hotkey(app: tauri::AppHandle, workspace_id: String, new_hotk
         let shortcut_manager = app.global_shortcut();
 
         if !old_hotkey.is_empty() {
-            if let Ok(old_shortcut) = old_hotkey.to_lowercase().parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            if let Ok(old_shortcut) = old_hotkey
+                .to_lowercase()
+                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+            {
                 let _ = shortcut_manager.unregister(old_shortcut);
             }
         }
@@ -2986,7 +3220,7 @@ fn update_workspace_hotkey(app: tauri::AppHandle, workspace_id: String, new_hotk
                     .to_lowercase()
                     .parse::<tauri_plugin_global_shortcut::Shortcut>()
                     .map_err(|e| format!("解析快捷键失败，格式可能不正确: {}", e))?;
-                
+
                 let _ = shortcut_manager.register(new_shortcut);
             }
         }
@@ -3648,8 +3882,8 @@ fn percent_encode_url_component(value: &str) -> String {
 }
 
 #[tauri::command]
-fn pick_obsidian_vault_path() -> Result<Option<String>, String> {
-    pick_folder_path()
+fn pick_obsidian_vault_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    pick_folder_path_dialog(&app)
 }
 
 #[tauri::command]
@@ -4142,23 +4376,25 @@ fn set_todo_window_always_on_top(app: tauri::AppHandle, enabled: bool) -> Result
 }
 
 #[tauri::command]
-fn pick_resource_input(mode: String) -> Result<Option<OrbitItemInput>, String> {
+fn pick_resource_input(app: tauri::AppHandle, mode: String) -> Result<Option<OrbitItemInput>, String> {
     let picked = if mode == "folder" {
-        pick_folder_path()?
+        pick_folder_path_dialog(&app)?
     } else {
-        pick_file_path(
-            "Applications, shortcuts, scripts, files|*.exe;*.lnk;*.msi;*.appref-ms;*.cmd;*.bat;*.ps1;*.py;*.js;*.ts;*.vbs;*.ahk;*.*|All files|*.*",
-            "Select a resource",
+        pick_file_path_dialog(
+            &app,
+            "Applications, shortcuts, scripts, files",
+            &["exe", "lnk", "msi", "appref-ms", "cmd", "bat", "ps1", "py", "js", "ts", "vbs", "ahk"],
         )?
     };
     Ok(picked.map(|path| item_input_from_dropped_path(&path)))
 }
 
 #[tauri::command]
-fn pick_icon_image() -> Result<Option<String>, String> {
-    let picked = pick_file_path(
-        "Images|*.png;*.jpg;*.jpeg;*.webp;*.gif;*.svg;*.ico|All files|*.*",
-        "Select an icon image",
+fn pick_icon_image(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let picked = pick_file_path_dialog(
+        &app,
+        "Images",
+        &["png", "jpg", "jpeg", "webp", "gif", "svg", "ico"],
     )?;
     match picked {
         Some(path) => Ok(Some(image_file_to_data_url(Path::new(&path))?)),
@@ -4403,7 +4639,11 @@ fn resolve_lnk_target(lnk_path: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn win_shell_execute(target: &str, args: Option<&str>, working_dir: Option<&str>) -> Result<(), String> {
+fn win_shell_execute(
+    target: &str,
+    args: Option<&str>,
+    working_dir: Option<&str>,
+) -> Result<(), String> {
     let mut target_to_run = target.to_string();
     if target.to_lowercase().ends_with(".lnk") {
         if let Some(resolved) = resolve_lnk_target(target) {
@@ -4415,13 +4655,13 @@ fn win_shell_execute(target: &str, args: Option<&str>, working_dir: Option<&str>
 
     let target_wide = to_wide_chars(&target_to_run);
     let operation_wide = to_wide_chars("open");
-    
+
     let args_wide = args.map(to_wide_chars);
     let args_ptr = match &args_wide {
         Some(w) => w.as_ptr(),
         None => std::ptr::null(),
     };
-    
+
     let custom_dir = working_dir.map(std::path::Path::new);
     let parent_dir = std::path::Path::new(&target_to_run).parent();
     let dir_wide = custom_dir
@@ -4993,6 +5233,15 @@ fn set_display_mode(app: tauri::AppHandle, mode: String) -> Result<CatalogSnapsh
 }
 
 #[tauri::command]
+fn set_resource_mode(app: tauri::AppHandle, mode: String) -> Result<CatalogSnapshot, String> {
+    let normalized = if mode == "single" { "single" } else { "hierarchical" };
+    let conn = open_db()?;
+    set_setting_value(&conn, "resource_mode", normalized)?;
+    let _ = app.emit("orbit://refresh-resources", ());
+    catalog_snapshot()
+}
+
+#[tauri::command]
 fn set_hotkey_behavior(app: tauri::AppHandle, behavior: String) -> Result<CatalogSnapshot, String> {
     let conn = open_db()?;
     set_setting_value(&conn, "hotkey_behavior", &behavior)?;
@@ -5153,21 +5402,15 @@ fn ensure_local_templates() -> Result<(), String> {
             hotkey_binder_manifest(),
         )
         .map_err(|error| format!("Failed to write hotkey plugin manifest: {error}"))?;
-        fs::write(
-            hotkey_plugin_root.join("main.ts"),
-            hotkey_binder_source(),
-        )
-        .map_err(|error| format!("Failed to write hotkey plugin source: {error}"))?;
+        fs::write(hotkey_plugin_root.join("main.ts"), hotkey_binder_source())
+            .map_err(|error| format!("Failed to write hotkey plugin source: {error}"))?;
         fs::write(
             hotkey_plugin_root.join("orbitstart-plugin-api.d.ts"),
             hello_plugin_api_types(),
         )
         .map_err(|error| format!("Failed to write hotkey plugin API types: {error}"))?;
-        fs::write(
-            hotkey_plugin_root.join("README.md"),
-            hotkey_binder_readme(),
-        )
-        .map_err(|error| format!("Failed to write hotkey plugin README: {error}"))?;
+        fs::write(hotkey_plugin_root.join("README.md"), hotkey_binder_readme())
+            .map_err(|error| format!("Failed to write hotkey plugin README: {error}"))?;
     }
 
     let workspaces_plugin_root = plugins_dir()?.join("workspaces");
@@ -5977,7 +6220,10 @@ fn current_process_window_by_title(title: &'static str) -> win32::HWND {
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
-fn top_level_hwnd_for_window(window: &tauri::WebviewWindow, title: &'static str) -> Result<win32::HWND, String> {
+fn top_level_hwnd_for_window(
+    window: &tauri::WebviewWindow,
+    title: &'static str,
+) -> Result<win32::HWND, String> {
     let by_title = current_process_window_by_title(title);
     if !by_title.is_null() {
         return Ok(by_title);
@@ -6022,13 +6268,19 @@ fn current_bubble_rect(hwnd: win32::HWND) -> Option<win32::RECT> {
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
-fn run_on_main_from_bubble_input(app: tauri::AppHandle, action: impl FnOnce(tauri::AppHandle) + Send + 'static) {
+fn run_on_main_from_bubble_input(
+    app: tauri::AppHandle,
+    action: impl FnOnce(tauri::AppHandle) + Send + 'static,
+) {
     let app_for_closure = app.clone();
     let _ = app.run_on_main_thread(move || action(app_for_closure));
 }
 
 #[cfg(all(desktop, target_os = "windows"))]
-fn activate_bubble_input(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+fn activate_bubble_input(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
     let hwnd = top_level_hwnd_for_window(window, "OrbitStart Bubble")?;
     let mut should_start = false;
     {
@@ -6410,7 +6662,10 @@ fn enter_floating_mode(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn exit_floating_mode_and_show_main(app: tauri::AppHandle, action: Option<String>) -> Result<(), String> {
+fn exit_floating_mode_and_show_main(
+    app: tauri::AppHandle,
+    action: Option<String>,
+) -> Result<(), String> {
     let app_for_main = app.clone();
     app.run_on_main_thread(move || {
         hide_bubble_window(&app_for_main);
@@ -6463,32 +6718,34 @@ fn show_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
                         let scale_factor = monitor.scale_factor();
                         let monitor_pos = monitor.position();
                         let monitor_size = monitor.size();
-                        
+
                         let logical_gap = 12.0;
                         let logical_menu_width = 340.0;
                         let logical_menu_height = 72.0;
-                        
+
                         let physical_gap = (logical_gap * scale_factor) as i32;
                         let physical_menu_width = (logical_menu_width * scale_factor) as u32;
                         let physical_menu_height = (logical_menu_height * scale_factor) as u32;
-                        
+
                         let monitor_center_x = monitor_pos.x + (monitor_size.width as i32) / 2;
                         let bubble_center_x = bubble_pos.x + (bubble_size.width as i32) / 2;
                         let is_left = bubble_center_x < monitor_center_x;
-                        
+
                         let menu_x = if is_left {
                             bubble_pos.x + bubble_size.width as i32 + physical_gap
                         } else {
                             bubble_pos.x - physical_menu_width as i32 - physical_gap
                         };
-                        
+
                         let bubble_center_y = bubble_pos.y + (bubble_size.height as i32) / 2;
                         let menu_y = bubble_center_y - (physical_menu_height as i32) / 2;
-                        
+
                         let min_y = monitor_pos.y + (10.0 * scale_factor) as i32;
-                        let max_y = monitor_pos.y + monitor_size.height as i32 - (10.0 * scale_factor) as i32 - physical_menu_height as i32;
+                        let max_y = monitor_pos.y + monitor_size.height as i32
+                            - (10.0 * scale_factor) as i32
+                            - physical_menu_height as i32;
                         let menu_y = menu_y.clamp(min_y, max_y);
-                        
+
                         let _ = menu.set_position(tauri::PhysicalPosition::new(menu_x, menu_y));
                     }
                 }
@@ -6510,14 +6767,18 @@ fn hide_bubble_menu_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_bubble_setting(app: tauri::AppHandle, key: String, value: String) -> Result<CatalogSnapshot, String> {
+fn set_bubble_setting(
+    app: tauri::AppHandle,
+    key: String,
+    value: String,
+) -> Result<CatalogSnapshot, String> {
     let conn = open_db()?;
     set_setting_value(&conn, &key, &value)?;
 
     if key == "bubble_enabled" && value != "true" {
         hide_bubble_window(&app);
     }
-    
+
     // Apply immediately to bubble window if it exists
     if let Some(bubble) = app.get_webview_window("floating-bubble") {
         if key == "bubble_always_on_top" {
@@ -6535,7 +6796,7 @@ fn set_bubble_setting(app: tauri::AppHandle, key: String, value: String) -> Resu
             let _ = menu.set_always_on_top(value == "true");
         }
     }
-    
+
     let _ = app.emit("orbit://refresh-resources", ());
     catalog_snapshot()
 }
@@ -6612,11 +6873,14 @@ fn show_navigate_to_group(app: &tauri::AppHandle, group_id: &str) {
 }
 
 #[cfg(desktop)]
-fn handle_global_shortcut_press(app: &tauri::AppHandle, shortcut: &tauri_plugin_global_shortcut::Shortcut) {
+fn handle_global_shortcut_press(
+    app: &tauri::AppHandle,
+    shortcut: &tauri_plugin_global_shortcut::Shortcut,
+) {
     let main_hotkey_str = open_db()
         .and_then(|conn| setting(&conn, "global_hotkey", "Ctrl+Alt+Space"))
         .unwrap_or_else(|_| "Ctrl+Alt+Space".to_string());
-    
+
     let main_shortcut = main_hotkey_str
         .to_lowercase()
         .parse::<tauri_plugin_global_shortcut::Shortcut>();
@@ -6632,7 +6896,10 @@ fn handle_global_shortcut_press(app: &tauri::AppHandle, shortcut: &tauri_plugin_
         if let Ok(custom_hotkeys) = get_custom_hotkeys(&conn) {
             for (group_id, hotkey_str) in custom_hotkeys {
                 if !hotkey_str.is_empty() {
-                    if let Ok(sh) = hotkey_str.to_lowercase().parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                    if let Ok(sh) = hotkey_str
+                        .to_lowercase()
+                        .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                    {
                         if shortcut == &sh {
                             show_navigate_to_group(app, &group_id);
                             return;
@@ -6643,15 +6910,27 @@ fn handle_global_shortcut_press(app: &tauri::AppHandle, shortcut: &tauri_plugin_
         }
 
         // 动态检查工作区绑定快捷键并触发运行
-        if let Ok(mut stmt) = conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_workspace:%'") {
-            if let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) {
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_workspace:%'")
+        {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) {
                 for row in rows {
                     if let Ok((key, value)) = row {
                         if !value.is_empty() {
-                            if let Ok(sh) = value.to_lowercase().parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                            if let Ok(sh) = value
+                                .to_lowercase()
+                                .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                            {
                                 if shortcut == &sh {
-                                    if let Some(workspace_id) = key.strip_prefix("hotkey_workspace:") {
-                                        let _ = app.emit("orbit://run-workspace", workspace_id.to_string());
+                                    if let Some(workspace_id) =
+                                        key.strip_prefix("hotkey_workspace:")
+                                    {
+                                        let _ = app.emit(
+                                            "orbit://run-workspace",
+                                            workspace_id.to_string(),
+                                        );
                                         return;
                                     }
                                 }
@@ -6699,12 +6978,15 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
             if let Ok(custom_hotkeys) = get_custom_hotkeys(&conn) {
                 for (group_id, hotkey_str) in custom_hotkeys {
                     if !hotkey_str.is_empty() {
-                        if let Ok(sh) = hotkey_str.to_lowercase().parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                        if let Ok(sh) = hotkey_str
+                            .to_lowercase()
+                            .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                        {
                             if let Err(e) = app.global_shortcut().register(sh) {
-                                  eprintln!(
-                                      "Failed to register group shortcut '{}' for group '{}': {}",
-                                      hotkey_str, group_id, e
-                                  );
+                                eprintln!(
+                                    "Failed to register group shortcut '{}' for group '{}': {}",
+                                    hotkey_str, group_id, e
+                                );
                             }
                         }
                     }
@@ -6712,12 +6994,19 @@ fn setup_global_shortcut(app: &mut tauri::App) -> Result<(), Box<dyn std::error:
             }
 
             // 动态注册从数据库读取的工作区绑定快捷键
-            if let Ok(mut stmt) = conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_workspace:%'") {
-                if let Ok(rows) = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))) {
+            if let Ok(mut stmt) =
+                conn.prepare("SELECT key, value FROM settings WHERE key LIKE 'hotkey_workspace:%'")
+            {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
                     for row in rows {
                         if let Ok((key, value)) = row {
                             if !value.is_empty() {
-                                if let Ok(sh) = value.to_lowercase().parse::<tauri_plugin_global_shortcut::Shortcut>() {
+                                if let Ok(sh) = value
+                                    .to_lowercase()
+                                    .parse::<tauri_plugin_global_shortcut::Shortcut>()
+                                {
                                     if let Err(e) = app.global_shortcut().register(sh) {
                                         eprintln!(
                                             "Failed to register workspace shortcut '{}' for workspace '{}': {}",
@@ -6785,11 +7074,12 @@ async fn run_script(
         p
     } else if let Some(c) = content {
         let temp_dir = std::env::temp_dir();
-        let extension = if script_type.to_lowercase() == "powershell" || script_type.to_lowercase() == "ps1" {
-            "ps1"
-        } else {
-            "bat"
-        };
+        let extension =
+            if script_type.to_lowercase() == "powershell" || script_type.to_lowercase() == "ps1" {
+                "ps1"
+            } else {
+                "bat"
+            };
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -6851,7 +7141,9 @@ fn check_process_running(process_name: String) -> Result<bool, String> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
-    let output = cmd.output().map_err(|e| format!("Failed to run tasklist: {}", e))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run tasklist: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
     Ok(stdout.contains(&process_name.to_lowercase()))
 }
@@ -6870,13 +7162,13 @@ fn check_port_open(address: String) -> Result<bool, String> {
             if let Some(socket_addr) = addrs.next() {
                 match TcpStream::connect_timeout(&socket_addr, Duration::from_millis(500)) {
                     Ok(_) => Ok(true),
-                    Err(_) => Ok(false)
+                    Err(_) => Ok(false),
                 }
             } else {
                 Err("No valid socket address found".to_string())
             }
         }
-        Err(e) => Err(format!("Invalid address format: {}", e))
+        Err(e) => Err(format!("Invalid address format: {}", e)),
     }
 }
 
@@ -6890,7 +7182,13 @@ fn check_url_accessible(url: String) -> bool {
     use std::process::Command as ProcessCommand;
     let script = format!("try {{ $r = Invoke-WebRequest -Uri '{}' -UseBasicParsing -TimeoutSec 2; exit ($r.StatusCode -eq 200 -or $r.StatusCode -eq 302) ? 0 : 1 }} catch {{ exit 1 }}", url);
     let mut cmd = ProcessCommand::new("powershell.exe");
-    cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]);
+    cmd.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ]);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -6898,7 +7196,7 @@ fn check_url_accessible(url: String) -> bool {
     }
     match cmd.status() {
         Ok(status) => status.success(),
-        Err(_) => false
+        Err(_) => false,
     }
 }
 
@@ -6962,11 +7260,7 @@ extern "system" {
         lParam: isize,
     ) -> i32;
     fn IsWindowVisible(hwnd: *mut std::ffi::c_void) -> i32;
-    fn GetWindowTextW(
-        hwnd: *mut std::ffi::c_void,
-        lpString: *mut u16,
-        nMaxCount: i32,
-    ) -> i32;
+    fn GetWindowTextW(hwnd: *mut std::ffi::c_void, lpString: *mut u16, nMaxCount: i32) -> i32;
     fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, lpdwProcessId: *mut u32) -> u32;
     fn GetWindowRect(hwnd: *mut std::ffi::c_void, lpRect: *mut RECT) -> i32;
     fn GetWindowPlacement(hwnd: *mut std::ffi::c_void, lpwndpl: *mut WINDOWPLACEMENT) -> i32;
@@ -6990,7 +7284,11 @@ extern "system" {
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
 extern "system" {
-    fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut std::ffi::c_void;
+    fn OpenProcess(
+        dwDesiredAccess: u32,
+        bInheritHandle: i32,
+        dwProcessId: u32,
+    ) -> *mut std::ffi::c_void;
     fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
     fn QueryFullProcessImageNameW(
         hProcess: *mut std::ffi::c_void,
@@ -7012,43 +7310,45 @@ struct WindowMatchQuery {
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn enum_windows_callback(hwnd: *mut std::ffi::c_void, lparam: isize) -> i32 {
     let list = &mut *(lparam as *mut Vec<WorkspaceWindowLayout>);
-    
+
     if IsWindowVisible(hwnd) == 0 {
         return 1;
     }
-    
+
     let mut title_buf = [0u16; 512];
     let len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 512);
     if len <= 0 {
         return 1;
     }
     let window_title = String::from_utf16_lossy(&title_buf[..len as usize]);
-    
+
     let style = GetWindowLongW(hwnd, -16);
-    if (style & 0x40000000) != 0 { // WS_CHILD
+    if (style & 0x40000000) != 0 {
+        // WS_CHILD
         return 1;
     }
     let ex_style = GetWindowLongW(hwnd, -20);
-    if (ex_style & 0x00000080) != 0 { // WS_EX_TOOLWINDOW
+    if (ex_style & 0x00000080) != 0 {
+        // WS_EX_TOOLWINDOW
         return 1;
     }
-    
+
     let mut pid: u32 = 0;
     GetWindowThreadProcessId(hwnd, &mut pid);
     if pid == 0 {
         return 1;
     }
-    
+
     let h_process = OpenProcess(0x1000, 0, pid);
     let mut exe_path = "unknown".to_string();
     let mut process_name = "unknown.exe".to_string();
-    
+
     if !h_process.is_null() {
         let mut path_buf = [0u16; 1024];
         let mut size: u32 = 1024;
         let success = QueryFullProcessImageNameW(h_process, 0, path_buf.as_mut_ptr(), &mut size);
         CloseHandle(h_process);
-        
+
         if success != 0 {
             exe_path = String::from_utf16_lossy(&path_buf[..size as usize]);
             process_name = std::path::Path::new(&exe_path)
@@ -7057,7 +7357,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: *mut std::ffi::c_void, lpa
                 .unwrap_or_else(|| "unknown.exe".to_string());
         }
     }
-    
+
     let exe_path_lower = exe_path.to_lowercase();
     if exe_path_lower.contains("explorer.exe") {
         let mut class_buf = [0u16; 256];
@@ -7078,34 +7378,44 @@ unsafe extern "system" fn enum_windows_callback(hwnd: *mut std::ffi::c_void, lpa
     {
         return 1;
     }
-    
-    let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     if GetWindowRect(hwnd, &mut rect) == 0 {
         return 1;
     }
-    
+
     let mut placement = WINDOWPLACEMENT {
         length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
         flags: 0,
         show_cmd: 0,
         min_position: POINT { x: 0, y: 0 },
         max_position: POINT { x: 0, y: 0 },
-        normal_position: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+        normal_position: RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
     };
-    
+
     let is_maximized = if GetWindowPlacement(hwnd, &mut placement) != 0 {
         Some(placement.show_cmd == 3)
     } else {
         Some(false)
     };
-    
+
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
-    
+
     if width < 100 || height < 100 {
         return 1;
     }
-    
+
     list.push(WorkspaceWindowLayout {
         process_name,
         window_title: Some(window_title),
@@ -7118,24 +7428,27 @@ unsafe extern "system" fn enum_windows_callback(hwnd: *mut std::ffi::c_void, lpa
         captured_at: "".to_string(),
         always_on_top: Some(false),
     });
-    
+
     1
 }
 
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn enum_windows_match_callback(hwnd: *mut std::ffi::c_void, lparam: isize) -> i32 {
+unsafe extern "system" fn enum_windows_match_callback(
+    hwnd: *mut std::ffi::c_void,
+    lparam: isize,
+) -> i32 {
     let query = &mut *(lparam as *mut WindowMatchQuery);
-    
+
     if IsWindowVisible(hwnd) == 0 {
         return 1;
     }
-    
+
     let mut pid: u32 = 0;
     GetWindowThreadProcessId(hwnd, &mut pid);
     if pid == 0 {
         return 1;
     }
-    
+
     let h_process = OpenProcess(0x1000, 0, pid);
     let mut path_buf = [0u16; 1024];
     let mut size: u32 = 1024;
@@ -7146,20 +7459,20 @@ unsafe extern "system" fn enum_windows_match_callback(hwnd: *mut std::ffi::c_voi
     } else {
         0
     };
-    
+
     if success != 0 {
         let exe_path = String::from_utf16_lossy(&path_buf[..size as usize]);
         let process_name = std::path::Path::new(&exe_path)
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
-            
+
         let is_proc_match = if let Some(ref target_path) = query.executable_path {
             target_path.to_lowercase() == exe_path.to_lowercase()
         } else {
             query.process_name.to_lowercase() == process_name.to_lowercase()
         };
-        
+
         if is_proc_match {
             if let Some(ref target_title) = query.window_title {
                 let mut title_buf = [0u16; 512];
@@ -7173,12 +7486,12 @@ unsafe extern "system" fn enum_windows_match_callback(hwnd: *mut std::ffi::c_voi
                     return 1;
                 }
             }
-            
+
             query.found_hwnd = Some(hwnd);
             return 0;
         }
     }
-    
+
     1
 }
 
@@ -7187,14 +7500,24 @@ fn workspaces_capture_active_windows() -> Result<Vec<WorkspaceWindowLayout>, Str
     let mut list: Vec<WorkspaceWindowLayout> = Vec::new();
     #[cfg(target_os = "windows")]
     unsafe {
-        EnumWindows(enum_windows_callback, &mut list as *mut Vec<WorkspaceWindowLayout> as isize);
-        
+        EnumWindows(
+            enum_windows_callback,
+            &mut list as *mut Vec<WorkspaceWindowLayout> as isize,
+        );
+
         let mut log = String::new();
         log.push_str(&format!("Captured Windows Count: {}\n", list.len()));
         for (i, win) in list.iter().enumerate() {
             log.push_str(&format!(
                 "[{}] Process: '{}', Title: '{:?}', Path: '{:?}', Rect: ({}, {}, {}, {})\n",
-                i, win.process_name, win.window_title, win.executable_path, win.x, win.y, win.width, win.height
+                i,
+                win.process_name,
+                win.window_title,
+                win.executable_path,
+                win.x,
+                win.y,
+                win.width,
+                win.height
             ));
         }
         let temp_path = std::env::temp_dir().join("orbitstart_capture_debug.log");
@@ -7213,14 +7536,17 @@ fn workspaces_apply_window_layout(layout: WorkspaceWindowLayout) -> bool {
             executable_path: layout.executable_path.clone(),
             found_hwnd: None,
         };
-        
-        EnumWindows(enum_windows_match_callback, &mut query as *mut WindowMatchQuery as isize);
-        
+
+        EnumWindows(
+            enum_windows_match_callback,
+            &mut query as *mut WindowMatchQuery as isize,
+        );
+
         if let Some(hwnd) = query.found_hwnd {
             ShowWindow(hwnd, 9); // SW_RESTORE
             SetForegroundWindow(hwnd);
             SetActiveWindow(hwnd);
-            
+
             let hwnd_insert_after = if layout.always_on_top.unwrap_or(false) {
                 -1_isize as *mut std::ffi::c_void // HWND_TOPMOST
             } else {
@@ -7230,7 +7556,13 @@ fn workspaces_apply_window_layout(layout: WorkspaceWindowLayout) -> bool {
             if layout.is_maximized.unwrap_or(false) {
                 ShowWindow(hwnd, 3); // SW_SHOWMAXIMIZED
             } else {
-                let h_monitor = MonitorFromPoint(POINT { x: layout.x, y: layout.y }, 0);
+                let h_monitor = MonitorFromPoint(
+                    POINT {
+                        x: layout.x,
+                        y: layout.y,
+                    },
+                    0,
+                );
                 let (final_x, final_y) = if h_monitor.is_null() {
                     (100, 100)
                 } else {
@@ -7244,7 +7576,7 @@ fn workspaces_apply_window_layout(layout: WorkspaceWindowLayout) -> bool {
                     final_y,
                     layout.width,
                     layout.height,
-                    0x0040 | 0x0004 | 0x0010
+                    0x0040 | 0x0004 | 0x0010,
                 );
             }
             return true;
@@ -7308,6 +7640,7 @@ pub fn run() {
             set_safe_mode,
             set_auto_pinned_mode,
             set_display_mode,
+            set_resource_mode,
             set_hotkey_behavior,
             read_plugin_runtime,
             record_plugin_runtime_event,
@@ -7350,11 +7683,16 @@ pub fn run() {
             setup_tray(app)?;
             #[cfg(desktop)]
             {
-                let _ = app.handle().plugin(tauri_plugin_updater::Builder::new().build());
+                let _ = app
+                    .handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build());
                 let _ = app.handle().plugin(tauri_plugin_process::init());
-                let _ = app.handle().plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-                    show_and_focus_main(app);
-                }));
+                let _ = app.handle().plugin(tauri_plugin_dialog::init());
+                let _ =
+                    app.handle()
+                        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+                            show_and_focus_main(app);
+                        }));
             }
             Ok(())
         })
@@ -7429,7 +7767,10 @@ mod tests {
     #[test]
     fn test_print_windows() {
         unsafe {
-            unsafe extern "system" fn test_callback(hwnd: *mut std::ffi::c_void, _lparam: isize) -> i32 {
+            unsafe extern "system" fn test_callback(
+                hwnd: *mut std::ffi::c_void,
+                _lparam: isize,
+            ) -> i32 {
                 let visible = IsWindowVisible(hwnd);
                 let mut title_buf = [0u16; 512];
                 let len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 512);
@@ -7438,20 +7779,22 @@ mod tests {
                 } else {
                     "".to_string()
                 };
-                
+
                 let style = GetWindowLongW(hwnd, -16);
                 let ex_style = GetWindowLongW(hwnd, -20);
-                
+
                 let mut pid = 0;
                 GetWindowThreadProcessId(hwnd, &mut pid);
-                
+
                 let h_process = OpenProcess(0x1000, 0, pid);
                 let mut exe_path = "unknown".to_string();
                 let mut process_name = "unknown.exe".to_string();
                 if !h_process.is_null() {
                     let mut path_buf = [0u16; 1024];
                     let mut size = 1024;
-                    if QueryFullProcessImageNameW(h_process, 0, path_buf.as_mut_ptr(), &mut size) != 0 {
+                    if QueryFullProcessImageNameW(h_process, 0, path_buf.as_mut_ptr(), &mut size)
+                        != 0
+                    {
                         exe_path = String::from_utf16_lossy(&path_buf[..size as usize]);
                         if let Some(f) = std::path::Path::new(&exe_path).file_name() {
                             process_name = f.to_string_lossy().into_owned();
@@ -7459,7 +7802,7 @@ mod tests {
                     }
                     CloseHandle(h_process);
                 }
-                
+
                 if visible != 0 || len > 0 {
                     println!(
                         "HWND: {:?}, Title: '{}', Proc: '{}', Visible: {}, Style: 0x{:X}, ExStyle: 0x{:X}, PID: {}",

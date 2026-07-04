@@ -142,8 +142,8 @@ export function OnboardingWizard({
         {/* ===== STEP 1: Template Selection ===== */}
         {step === "template-select" && (
           <div className="onboarding-step step-template-select">
-            <h2>选择一个场景模板</h2>
-            <p>第一次打开 OrbitStart 时，让我们帮你快速上手。选择最符合你使用场景的模板，系统将自动创建示例工作区。</p>
+            <h2>选择一个资源导航模板</h2>
+            <p>第一次打开 OrbitStart 时，先建立一组适合你的资源目录。模板会在左侧资源导航中创建目录，并放入少量示例资源。</p>
 
             <div className="template-grid">
               {SCENARIO_TEMPLATES.map((tpl) => (
@@ -182,11 +182,11 @@ export function OnboardingWizard({
           <div className="onboarding-step step-tags-created">
             <div className="success-badge">
               <CheckCircle2 size={20} />
-              <span>场景模板已应用</span>
+            <span>资源目录已创建</span>
             </div>
 
-            <h2>接下来，让我们导入你的资源</h2>
-            <p>OrbitStart 通过扫描本地程序和浏览器书签来建立你的资源库。建议两步都执行以获得最佳体验。</p>
+            <h2>接下来，把真实资源放入目录</h2>
+            <p>扫描本地程序和浏览器书签后，资源会先进入对应的应用、网站或未分类目录；你可以稍后在资源导航中拖拽整理。</p>
 
             <div className="scan-steps">
               <button
@@ -231,7 +231,7 @@ export function OnboardingWizard({
             )}
 
             {!bothDone && (
-              <p className="onboarding-hint">完成上方两个步骤后即可进入主界面</p>
+              <p className="onboarding-hint">也可以先跳过扫描，进入资源中心后手动添加或拖拽资源。</p>
             )}
           </div>
         )}

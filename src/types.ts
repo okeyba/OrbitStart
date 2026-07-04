@@ -151,6 +151,22 @@ export interface OrbitGroup {
   custom?: boolean;
 }
 
+export type ResourceFolderKind = "root" | "app" | "website" | "file" | "workspace" | "favorite" | "recent" | "custom";
+
+export interface ResourceFolder {
+  id: string;
+  name: string;
+  parentId?: string | null;
+  kind?: ResourceFolderKind;
+  icon?: string;
+  color?: string;
+  description?: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+  source?: "system" | "group" | "user";
+}
+
 export interface OrbitCommand {
   id: string;
   title: string;
@@ -220,6 +236,7 @@ export interface AppSettings {
   dataDir: string;
   autoPinnedMode: boolean;
   displayMode: "simple" | "detailed" | string;
+  resourceMode?: "hierarchical" | "single" | string;
   hotkeyBehavior: "command_bar" | "open_only" | string;
   bubbleEnabled: boolean;
   bubbleShowWhenMainHidden: boolean;

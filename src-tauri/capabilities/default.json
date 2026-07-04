@@ -28,6 +28,7 @@
     "core:window:allow-destroy",
     "core:tray:default",
     "global-shortcut:allow-is-registered",
+    "dialog:allow-open",
     "updater:allow-check",
     "updater:allow-download-and-install",
     "process:allow-restart",
