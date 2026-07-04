@@ -589,7 +589,7 @@ fn ensure_default_settings(conn: &Connection) -> Result<(), String> {
         ("close_behavior", "tray"),
         ("auto_pinned_mode", "false"),
         ("display_mode", "simple"),
-        ("resource_mode", "hierarchical"),
+        ("resource_mode", "single"),
         ("hotkey_behavior", "command_bar"),
         ("bubble_enabled", "false"),
         ("bubble_show_when_main_hidden", "true"),
@@ -641,7 +641,7 @@ fn app_settings(conn: &Connection) -> Result<AppSettings, String> {
         data_dir: app_data_dir()?.to_string_lossy().to_string(),
         auto_pinned_mode: setting(conn, "auto_pinned_mode", "false")? == "true",
         display_mode: setting(conn, "display_mode", "simple")?,
-        resource_mode: setting(conn, "resource_mode", "hierarchical")?,
+        resource_mode: setting(conn, "resource_mode", "single")?,
         hotkey_behavior: setting(conn, "hotkey_behavior", "command_bar")?,
         bubble_enabled: setting(conn, "bubble_enabled", "false")? == "true",
         bubble_show_when_main_hidden: setting(conn, "bubble_show_when_main_hidden", "true")?

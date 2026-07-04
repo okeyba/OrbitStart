@@ -1731,7 +1731,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
     return localStorage.getItem("orbitstart.dashboard.hide_workbench") === "true";
   });
 
-  const resourceMode = settings?.resourceMode === "single" ? "single" : "hierarchical";
+  const resourceMode = settings?.resourceMode === "hierarchical" ? "hierarchical" : "single";
   const isHierarchicalResourceMode = resourceMode === "hierarchical";
   const resourceSideCollapsed = hideResourceNav && hideWorkbench;
 

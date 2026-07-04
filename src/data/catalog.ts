@@ -944,7 +944,7 @@ export const settings: AppSettings = {
   dataDir: "local-preview",
   autoPinnedMode: false,
   displayMode: "simple",
-  resourceMode: "hierarchical",
+  resourceMode: "single",
   hotkeyBehavior: "command_bar",
   bubbleEnabled: false,
   bubbleShowWhenMainHidden: true,
