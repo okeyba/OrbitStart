@@ -4711,8 +4711,12 @@ fn resolve_lnk_target(lnk_path: &str) -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn explorer_open_path(path: &Path) -> Result<(), String> {
+    let mut path_str = path.to_string_lossy().into_owned();
+    if path_str.starts_with(r"\\?\") {
+        path_str = path_str[4..].to_string();
+    }
     ProcessCommand::new("explorer.exe")
-        .arg(path)
+        .arg(&path_str)
         .spawn()
         .map_err(|error| format!("Failed to open folder: {error}"))?;
     Ok(())
@@ -4721,8 +4725,12 @@ fn explorer_open_path(path: &Path) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn explorer_reveal_path(path: &Path) -> Result<(), String> {
     let display_path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut path_str = display_path.to_string_lossy().into_owned();
+    if path_str.starts_with(r"\\?\") {
+        path_str = path_str[4..].to_string();
+    }
     ProcessCommand::new("explorer.exe")
-        .arg(format!("/select,\"{}\"", display_path.to_string_lossy()))
+        .arg(format!("/select,{}", path_str))
         .spawn()
         .map_err(|error| format!("Failed to reveal target: {error}"))?;
     Ok(())
@@ -4747,15 +4755,7 @@ fn win_shell_execute(
     args: Option<&str>,
     working_dir: Option<&str>,
 ) -> Result<(), String> {
-    let mut target_to_run = target.to_string();
-    if target.to_lowercase().ends_with(".lnk") {
-        if let Some(resolved) = resolve_lnk_target(target) {
-            if !resolved.trim().is_empty() {
-                target_to_run = resolved;
-            }
-        }
-    }
-
+    let target_to_run = target.to_string();
     let target_wide = to_wide_chars(&target_to_run);
     let operation_wide = to_wide_chars("open");
 

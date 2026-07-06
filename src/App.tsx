@@ -200,6 +200,13 @@ const resizeEdgeDirections: Record<ResizeEdge, Parameters<typeof startWindowResi
 
 function WindowResizeEdges() {
   const edges = Object.keys(resizeEdgeDirections) as ResizeEdge[];
+  const activeDrag = useRef<{
+    edge: ResizeEdge;
+    startX: number;
+    startY: number;
+    pointerId: number;
+  } | null>(null);
+
   return (
     <div className="window-resize-edges" aria-hidden="true">
       {edges.map((edge) => (
@@ -210,11 +217,30 @@ function WindowResizeEdges() {
             if (event.button !== 0) return;
             event.preventDefault();
             event.stopPropagation();
-            if (event.detail >= 2) {
-              toggleMaximizeWindow();
-              return;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            activeDrag.current = {
+              edge,
+              startX: event.clientX,
+              startY: event.clientY,
+              pointerId: event.pointerId
+            };
+          }}
+          onPointerMove={(event) => {
+            if (!activeDrag.current || activeDrag.current.pointerId !== event.pointerId) return;
+            const dx = event.clientX - activeDrag.current.startX;
+            const dy = event.clientY - activeDrag.current.startY;
+            if (Math.hypot(dx, dy) > 3) {
+              const currentEdge = activeDrag.current.edge;
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              activeDrag.current = null;
+              startWindowResize(resizeEdgeDirections[currentEdge]);
             }
-            startWindowResize(resizeEdgeDirections[edge]);
+          }}
+          onPointerUp={(event) => {
+            if (activeDrag.current && activeDrag.current.pointerId === event.pointerId) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              activeDrag.current = null;
+            }
           }}
           onDoubleClick={(event) => {
             event.preventDefault();
