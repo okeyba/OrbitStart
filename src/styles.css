@@ -1160,6 +1160,84 @@ textarea:focus-visible {
   background: rgba(7, 11, 20, 0.86);
 }
 
+.window-resize-edges {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
+}
+
+.window-resize-edge {
+  position: absolute;
+  display: block;
+  pointer-events: auto;
+  background: transparent;
+}
+
+.window-resize-edge.top {
+  top: 0;
+  left: 8px;
+  right: 8px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.window-resize-edge.bottom {
+  bottom: 0;
+  left: 8px;
+  right: 8px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.window-resize-edge.left {
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.window-resize-edge.right {
+  top: 8px;
+  right: 0;
+  bottom: 8px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.window-resize-edge.top-left,
+.window-resize-edge.top-right,
+.window-resize-edge.bottom-left,
+.window-resize-edge.bottom-right {
+  width: 10px;
+  height: 10px;
+}
+
+.window-resize-edge.top-left {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.window-resize-edge.top-right {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.window-resize-edge.bottom-left {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.window-resize-edge.bottom-right {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+
 .window-brand {
   display: inline-flex;
   align-items: center;
@@ -1724,6 +1802,10 @@ kbd {
   align-items: start;
 }
 
+.dashboard-grid.workbench-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .surface-panel,
 .setting-card {
   min-width: 0;
@@ -1802,6 +1884,105 @@ kbd {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--resource-min-width, 220px), 1fr));
   gap: calc(var(--space-3) - var(--density-factor, 0) * (var(--space-3) - var(--space-2)));
+}
+
+.resource-list .subtag-resource-block {
+  grid-column: 1 / -1;
+}
+
+.subtag-resource-block {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.subtag-resource-block .section-head.slim {
+  display: grid;
+  gap: 2px;
+}
+
+.subtag-resource-section {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  margin-left: calc(var(--subtag-depth, 0) * 18px);
+}
+
+.subtag-resource-section .subtag-resource-section {
+  padding-top: var(--space-3);
+  border-top: 1px solid rgba(255, 242, 198, 0.07);
+}
+
+.subtag-resource-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.subtag-collapse-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--soft);
+  cursor: pointer;
+  line-height: 0;
+  vertical-align: middle;
+  transition: border-color 140ms ease-out, background 140ms ease-out, color 140ms ease-out;
+}
+
+.subtag-collapse-button:hover {
+  border-color: rgba(39, 215, 198, 0.4);
+  background: rgba(39, 215, 198, 0.08);
+  color: var(--text);
+}
+
+.subtag-collapse-button svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+  margin: auto;
+  transform: none;
+}
+
+.subtag-collapse-button.expanded svg {
+  transform: none;
+}
+
+.subtag-resource-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.subtag-resource-title strong {
+  color: var(--text);
+  font-size: 19px;
+  line-height: 1.15;
+}
+
+.subtag-resource-title span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.subtag-resource-body {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.subtag-resource-list {
+  grid-template-columns: repeat(auto-fill, minmax(var(--resource-min-width, 220px), 1fr));
 }
 
 .resource-row {

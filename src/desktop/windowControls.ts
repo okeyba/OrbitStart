@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+export type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
+
 export function getAppWindow() {
   try {
     return getCurrentWindow();
@@ -29,6 +31,10 @@ export function closeWindow() {
 
 export function startWindowDrag() {
   runWindowAction((window) => window.startDragging());
+}
+
+export function startWindowResize(direction: ResizeDirection) {
+  runWindowAction((window) => window.startResizeDragging(direction));
 }
 
 export function showAndFocusWindow() {

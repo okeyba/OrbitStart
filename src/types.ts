@@ -10,6 +10,7 @@ export interface OrbitItem {
   arguments?: string;
   aliases: string[];
   tags: string[];
+  subTag?: string;
   icon: string;
   accent: string;
   favorite?: boolean;
@@ -27,6 +28,7 @@ export interface OrbitItemInput {
   arguments?: string;
   aliases: string[];
   tags: string[];
+  subTag?: string;
   icon: string;
   accent: string;
   favorite: boolean;

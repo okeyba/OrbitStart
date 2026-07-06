@@ -54,6 +54,8 @@ struct OrbitItem {
     last_launched_at: Option<String>,
     #[serde(default)]
     sort_order: i64,
+    #[serde(default)]
+    sub_tag: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -68,6 +70,8 @@ struct OrbitItemInput {
     arguments: String,
     aliases: Vec<String>,
     tags: Vec<String>,
+    #[serde(default)]
+    sub_tag: String,
     icon: String,
     accent: String,
     favorite: bool,
@@ -512,6 +516,13 @@ fn init_db(conn: &Connection) -> Result<(), String> {
         "ALTER TABLE items ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
     )?;
 
+    ensure_table_column(
+        conn,
+        "items",
+        "sub_tag",
+        "ALTER TABLE items ADD COLUMN sub_tag TEXT NOT NULL DEFAULT ''",
+    )?;
+
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_items_sort_order ON items(sort_order)",
         [],
@@ -673,6 +684,7 @@ fn seed_items() -> Vec<OrbitItemInput> {
             arguments: String::new(),
             aliases: vec!["text".to_string(), "txt".to_string(), "notepad".to_string()],
             tags: vec!["system".to_string(), "editor".to_string()],
+            sub_tag: String::new(),
             icon: "NotebookText".to_string(),
             accent: "#5cc8ff".to_string(),
             favorite: true,
@@ -686,6 +698,7 @@ fn seed_items() -> Vec<OrbitItemInput> {
             arguments: String::new(),
             aliases: vec!["orbit".to_string(), "project".to_string()],
             tags: vec!["project".to_string()],
+            sub_tag: String::new(),
             icon: "FolderKanban".to_string(),
             accent: "#8bd450".to_string(),
             favorite: true,
@@ -699,6 +712,7 @@ fn seed_items() -> Vec<OrbitItemInput> {
             arguments: String::new(),
             aliases: vec!["git".to_string(), "repo".to_string()],
             tags: vec!["web".to_string(), "dev".to_string()],
+            sub_tag: String::new(),
             icon: "Github".to_string(),
             accent: "#ffffff".to_string(),
             favorite: false,
@@ -713,6 +727,7 @@ fn seed_items() -> Vec<OrbitItemInput> {
             arguments: String::new(),
             aliases: vec!["chain".to_string(), "workspace".to_string()],
             tags: vec!["automation".to_string(), "template".to_string()],
+            sub_tag: String::new(),
             icon: "Workflow".to_string(),
             accent: "#ff7a90".to_string(),
             favorite: false,
@@ -2342,6 +2357,7 @@ fn item_input_from_dropped_path(path_text: &str) -> OrbitItemInput {
         arguments: String::new(),
         aliases,
         tags,
+        sub_tag: String::new(),
         icon: icon_base64.unwrap_or_else(|| icon.to_string()),
         accent: accent.to_string(),
         favorite: false,
@@ -2412,9 +2428,9 @@ fn insert_item(conn: &Connection, input: &OrbitItemInput) -> Result<OrbitItem, S
         INSERT OR IGNORE INTO items (
             id, title, subtitle, kind, group_id, target, arguments, aliases_json, tags_json,
             icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at,
-            sort_order
+            sort_order, sub_tag
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items), ?14)
         "#,
         params![
             &id,
@@ -2430,6 +2446,7 @@ fn insert_item(conn: &Connection, input: &OrbitItemInput) -> Result<OrbitItem, S
             input.accent,
             if input.favorite { 1 } else { 0 },
             now,
+            input.sub_tag.trim(),
         ],
     )
     .map_err(|error| format!("Failed to insert item: {error}"))?;
@@ -2450,9 +2467,9 @@ fn upsert_scanned_item(conn: &Connection, input: &OrbitItemInput) -> Result<Orbi
         INSERT INTO items (
             id, title, subtitle, kind, group_id, target, arguments, aliases_json, tags_json,
             icon, accent, favorite, launch_count, last_launched_at, created_at, updated_at,
-            sort_order
+            sort_order, sub_tag
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, NULL, ?13, ?13, (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items), ?14)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             subtitle = excluded.subtitle,
@@ -2462,6 +2479,7 @@ fn upsert_scanned_item(conn: &Connection, input: &OrbitItemInput) -> Result<Orbi
             icon = excluded.icon,
             accent = excluded.accent,
             arguments = excluded.arguments,
+            sub_tag = CASE WHEN excluded.sub_tag != '' THEN excluded.sub_tag ELSE items.sub_tag END,
             updated_at = excluded.updated_at
         "#,
         params![
@@ -2478,6 +2496,7 @@ fn upsert_scanned_item(conn: &Connection, input: &OrbitItemInput) -> Result<Orbi
             input.accent,
             if input.favorite { 1 } else { 0 },
             now,
+            input.sub_tag.trim(),
         ],
     )
     .map_err(|error| format!("Failed to upsert scanned item: {error}"))?;
@@ -2489,7 +2508,7 @@ fn get_item(conn: &Connection, id: &str) -> Result<Option<OrbitItem>, String> {
     conn.query_row(
         r#"
         SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments
+               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag
         FROM items
         WHERE id = ?1
         "#,
@@ -2504,7 +2523,7 @@ fn get_item_by_target(conn: &Connection, target: &str) -> Result<Option<OrbitIte
     conn.query_row(
         r#"
         SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments
+               icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag
         FROM items
         WHERE target = ?1
         "#,
@@ -2555,6 +2574,11 @@ fn merge_existing_item(
     let group = merge_group_values(&existing.group, &input.group, &kind);
     let aliases = merge_string_lists(&existing.aliases, &input.aliases);
     let tags = merge_string_lists(&existing.tags, &input.tags);
+    let sub_tag = if input.sub_tag.trim().is_empty() {
+        existing.sub_tag.clone()
+    } else {
+        input.sub_tag.trim().to_string()
+    };
     let favorite = existing.favorite || input.favorite;
 
     conn.execute(
@@ -2570,7 +2594,8 @@ fn merge_existing_item(
             accent = ?9,
             favorite = ?10,
             updated_at = ?11,
-            arguments = ?12
+            arguments = ?12,
+            sub_tag = ?13
         WHERE id = ?1
         "#,
         params![
@@ -2586,6 +2611,7 @@ fn merge_existing_item(
             if favorite { 1 } else { 0 },
             now,
             arguments,
+            sub_tag,
         ],
     )
     .map_err(|error| format!("Failed to merge existing item labels: {error}"))?;
@@ -2600,6 +2626,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrbitItem> {
     let launch_count: i64 = row.get(11)?;
     let sort_order: i64 = row.get(13)?;
     let arguments: String = row.get(14)?;
+    let sub_tag: String = row.get(15)?;
 
     Ok(OrbitItem {
         id: row.get(0)?,
@@ -2617,6 +2644,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrbitItem> {
         launch_count: launch_count.max(0) as u32,
         last_launched_at: row.get(12)?,
         sort_order,
+        sub_tag,
     })
 }
 
@@ -2625,7 +2653,7 @@ fn all_items(conn: &Connection) -> Result<Vec<OrbitItem>, String> {
         .prepare(
             r#"
             SELECT id, title, subtitle, kind, group_id, target, aliases_json, tags_json,
-                   icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments
+                   icon, accent, favorite, launch_count, last_launched_at, sort_order, arguments, sub_tag
             FROM items
             ORDER BY sort_order ASC, title COLLATE NOCASE ASC
             "#,
@@ -4518,7 +4546,8 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
             launch_count = ?12,
             last_launched_at = ?13,
             updated_at = ?14,
-            arguments = ?15
+            arguments = ?15,
+            sub_tag = ?16
         WHERE id = ?1
         "#,
         params![
@@ -4537,6 +4566,7 @@ fn update_item(app: tauri::AppHandle, item: OrbitItem) -> Result<OrbitItem, Stri
             item.last_launched_at,
             now,
             item.arguments,
+            item.sub_tag.trim(),
         ],
     )
     .map_err(|error| format!("Failed to update item: {error}"))?;
@@ -4629,13 +4659,68 @@ extern "system" {
 #[cfg(target_os = "windows")]
 fn resolve_lnk_target(lnk_path: &str) -> Option<String> {
     use lnk::ShellLink;
-    let shortcut = ShellLink::open(lnk_path).ok()?;
-    if let Some(info) = shortcut.link_info() {
-        if let Some(path) = info.local_base_path() {
-            return Some(path.clone());
+    if let Ok(shortcut) = ShellLink::open(lnk_path) {
+        if let Some(info) = shortcut.link_info() {
+            if let Some(path) = info.local_base_path() {
+                if !path.trim().is_empty() {
+                    return Some(path.clone());
+                }
+            }
         }
     }
-    None
+
+    let escaped = lnk_path.replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference='SilentlyContinue'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); if ($s -and $s.TargetPath) {{ [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $s.TargetPath }}",
+        escaped
+    );
+    let mut cmd = ProcessCommand::new("powershell.exe");
+    cmd.creation_flags(0x08000000);
+    let output = cmd
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if resolved.is_empty() {
+        None
+    } else {
+        Some(resolved)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn explorer_open_path(path: &Path) -> Result<(), String> {
+    ProcessCommand::new("explorer.exe")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Failed to open folder: {error}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn explorer_reveal_path(path: &Path) -> Result<(), String> {
+    let display_path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    ProcessCommand::new("explorer.exe")
+        .arg(format!("/select,\"{}\"", display_path.to_string_lossy()))
+        .spawn()
+        .map_err(|error| format!("Failed to reveal target: {error}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_existing_path(path: &Path) -> Result<String, String> {
+    if path.is_file() {
+        explorer_reveal_path(path)?;
+        return Ok(format!("已打开所在位置：{}", path.to_string_lossy()));
+    }
+    if path.is_dir() {
+        explorer_open_path(path)?;
+        return Ok(format!("已打开文件夹：{}", path.to_string_lossy()));
+    }
+    Err(format!("Cannot reveal target: {}", path.to_string_lossy()))
 }
 
 #[cfg(target_os = "windows")]
@@ -4752,8 +4837,11 @@ fn target_path_without_arguments(target: &str) -> String {
             return rest[..end].to_string();
         }
     }
-    if let Some(index) = trimmed.to_lowercase().find(".exe ") {
-        return trimmed[..index + 4].to_string();
+    let lower = trimmed.to_lowercase();
+    for marker in [".exe ", ".lnk ", ".appref-ms ", ".msi "] {
+        if let Some(index) = lower.find(marker) {
+            return trimmed[..index + marker.trim_end().len()].to_string();
+        }
     }
     trimmed.to_string()
 }
@@ -4767,20 +4855,24 @@ fn reveal_target(target: String) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let cleaned = target_path_without_arguments(&target);
-        let path = PathBuf::from(&cleaned);
-        if path.is_file() {
-            ProcessCommand::new("explorer.exe")
-                .arg(format!("/select,{}", path.to_string_lossy()))
-                .spawn()
-                .map_err(|error| format!("Failed to reveal target: {error}"))?;
-            return Ok(format!("Revealed {cleaned}"));
+        let mut candidates = Vec::new();
+        if cleaned.to_lowercase().ends_with(".lnk") {
+            if let Some(resolved) = resolve_lnk_target(&cleaned) {
+                candidates.push(PathBuf::from(target_path_without_arguments(&resolved)));
+            }
         }
-        if path.is_dir() {
-            return launch_target(cleaned);
+        candidates.push(PathBuf::from(&cleaned));
+
+        for path in &candidates {
+            if path.exists() {
+                return reveal_existing_path(path);
+            }
         }
-        if let Some(parent) = path.parent() {
+
+        if let Some(parent) = candidates.first().and_then(|path| path.parent()) {
             if parent.is_dir() {
-                return launch_target(parent.to_string_lossy().to_string());
+                explorer_open_path(parent)?;
+                return Ok(format!("已打开文件夹：{}", parent.to_string_lossy()));
             }
         }
     }
@@ -4824,6 +4916,7 @@ fn scan_dir_for_shortcuts(path: &Path, out: &mut Vec<OrbitItemInput>) {
             arguments: String::new(),
             aliases: vec![],
             tags: vec!["shortcut".to_string(), "scan".to_string()],
+            sub_tag: String::new(),
             icon: "AppWindow".to_string(),
             accent: "#5cc8ff".to_string(),
             favorite: false,
@@ -4948,6 +5041,7 @@ $items = foreach ($root in $roots) {
                     .filter(|value| !value.trim().is_empty())
                     .collect(),
                 tags: vec!["shortcut".to_string(), "scan".to_string()],
+                sub_tag: String::new(),
                 icon: if shortcut.icon_base64.trim().starts_with("data:image/") {
                     shortcut.icon_base64
                 } else if shortcut.icon_location.trim().is_empty() {
@@ -5007,6 +5101,7 @@ fn collect_bookmarks(node: &serde_json::Value, out: &mut Vec<OrbitItemInput>) {
             arguments: String::new(),
             aliases: vec![title.to_string()],
             tags: vec!["bookmark".to_string(), "browser".to_string()],
+            sub_tag: String::new(),
             icon: "Globe".to_string(),
             accent: "#37d6bf".to_string(),
             favorite: false,
@@ -5288,6 +5383,7 @@ fn import_catalog_json(app: tauri::AppHandle, json: String) -> Result<Vec<OrbitI
             arguments: item.arguments,
             aliases: item.aliases,
             tags: item.tags,
+            sub_tag: item.sub_tag,
             icon: item.icon,
             accent: item.accent,
             favorite: item.favorite,
@@ -7627,6 +7723,7 @@ pub fn run() {
             launch_item,
             launch_target,
             launch_target_with_args,
+            reveal_target,
             scan_shortcuts,
             scan_browser_bookmarks,
             update_global_hotkey,

@@ -4,7 +4,10 @@ import {
   Blocks,
   Bookmark,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  PanelRightClose,
+  PanelRightOpen,
   CircleDot,
   Command,
   Copy,
@@ -71,7 +74,7 @@ import {
   type EditMenuCommand
 } from "./desktop/contextMenu";
 import { installDesktopShell } from "./desktop/desktopShell";
-import { closeWindow, getAppWindow, minimizeWindow, startWindowDrag, toggleMaximizeWindow } from "./desktop/windowControls";
+import { closeWindow, getAppWindow, minimizeWindow, startWindowDrag, startWindowResize, toggleMaximizeWindow } from "./desktop/windowControls";
 import { buildSortedResults, matchesItemEnhanced as scoreMatchesItem, matchesCommandEnhanced as scoreMatchesCommand, scoreItem, getPinyinInitials, recencyBonus } from "./lib/searchEngine";
 import { tripCategoryLabels } from "./lib/tripTemplates";
 import {
@@ -182,6 +185,48 @@ type ImportFilterReason = {
   code: ImportFilterCode;
   label: string;
 };
+type ResizeEdge = "top" | "right" | "bottom" | "left" | "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
+const resizeEdgeDirections: Record<ResizeEdge, Parameters<typeof startWindowResize>[0]> = {
+  top: "North",
+  right: "East",
+  bottom: "South",
+  left: "West",
+  "top-left": "NorthWest",
+  "top-right": "NorthEast",
+  "bottom-left": "SouthWest",
+  "bottom-right": "SouthEast"
+};
+
+function WindowResizeEdges() {
+  const edges = Object.keys(resizeEdgeDirections) as ResizeEdge[];
+  return (
+    <div className="window-resize-edges" aria-hidden="true">
+      {edges.map((edge) => (
+        <span
+          key={edge}
+          className={`window-resize-edge ${edge}`}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.detail >= 2) {
+              toggleMaximizeWindow();
+              return;
+            }
+            startWindowResize(resizeEdgeDirections[edge]);
+          }}
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            toggleMaximizeWindow();
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 type AppDialogState =
   | { type: "group"; value: string }
   | { type: "delete-item"; item: OrbitItem }
@@ -396,6 +441,7 @@ function makeEmptyInput(kind: ItemKind = "app"): OrbitItemInput {
     arguments: "",
     aliases: [],
     tags: [],
+    subTag: "",
     icon: option.icon,
     accent: option.accent,
     favorite: false
@@ -443,6 +489,84 @@ function groupLabelsForItem(item: Pick<OrbitItem, "group">, groups: OrbitGroup[]
   return splitGroupIds(item.group).map((id) => ({ id, title: titleById.get(id) ?? id }));
 }
 
+function cleanSubTagSegment(value: string) {
+  return value.trim().replace(/[\\/]+/g, " ").replace(/\s+/g, " ");
+}
+
+function cleanSubTag(value?: string | null) {
+  return String(value ?? "")
+    .split(/[\\/]/)
+    .map(cleanSubTagSegment)
+    .filter(Boolean)
+    .join("/");
+}
+
+function subTagParts(value?: string | null) {
+  const cleaned = cleanSubTag(value);
+  return cleaned ? cleaned.split("/") : [];
+}
+
+function subTagLeafName(value: string) {
+  const parts = subTagParts(value);
+  return parts[parts.length - 1] ?? value;
+}
+
+function subTagDisplayName(value?: string | null) {
+  return subTagParts(value).join(" / ");
+}
+
+type SubTagNode = {
+  path: string;
+  name: string;
+  items: OrbitItem[];
+  children: SubTagNode[];
+};
+
+function buildSubTagTree(sourceItems: OrbitItem[]) {
+  const nodeMap = new Map<string, SubTagNode>();
+  const ensureNode = (path: string) => {
+    const cleanPath = cleanSubTag(path);
+    let node = nodeMap.get(cleanPath);
+    if (!node) {
+      node = { path: cleanPath, name: subTagLeafName(cleanPath), items: [], children: [] };
+      nodeMap.set(cleanPath, node);
+    }
+    return node;
+  };
+
+  for (const item of sourceItems) {
+    const parts = subTagParts(item.subTag);
+    if (parts.length === 0) continue;
+    let currentPath = "";
+    for (const part of parts) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      ensureNode(currentPath);
+    }
+    ensureNode(parts.join("/")).items.push(item);
+  }
+
+  const roots: SubTagNode[] = [];
+  for (const node of nodeMap.values()) {
+    const parentPath = subTagParts(node.path).slice(0, -1).join("/");
+    if (!parentPath) {
+      roots.push(node);
+    } else {
+      ensureNode(parentPath).children.push(node);
+    }
+  }
+
+  const sortNodes = (nodes: SubTagNode[]) => {
+    nodes.sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
+    nodes.forEach((node) => sortNodes(node.children));
+  };
+  sortNodes(roots);
+  return roots;
+}
+
+function subTagNodeTotal(node: SubTagNode): number {
+  return node.items.length + node.children.reduce((sum, child) => sum + subTagNodeTotal(child), 0);
+}
+
 function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -465,6 +589,7 @@ function inputFromItem(item: OrbitItem): OrbitItemInput {
     arguments: item.arguments ?? "",
     aliases: item.aliases,
     tags: item.tags,
+    subTag: item.subTag ?? "",
     icon: item.icon,
     accent: item.accent,
     favorite: item.favorite ?? false
@@ -923,6 +1048,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [activeView, setActiveView] = useState<ViewId>(getInitialView);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(() => sectionFromPanel(auxPanel));
   const [activeGroup, setActiveGroup] = useState("all");
+  const [collapsedSubTagPaths, setCollapsedSubTagPaths] = useState<string[]>([]);
+  const [hideWorkbench, setHideWorkbench] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("orbitstart.dashboard.hide_workbench") === "true";
+  });
   const [query, setQuery] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -1140,7 +1270,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         });
       } else {
         if (manual) {
-          setToast("当前已是最新版本 (v0.6.4)");
+          setToast("当前已是最新版本 (v0.7.4)");
         }
       }
     } catch (err) {
@@ -1918,6 +2048,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
     });
   }, [activeGroup, items, plugins, query, localOrder]);
 
+  const rootResourceItems = useMemo(
+    () => filteredItems.filter((item) => !cleanSubTag(item.subTag)),
+    [filteredItems]
+  );
+
+  const subTagTree = useMemo(() => buildSubTagTree(filteredItems), [filteredItems]);
+
   const favoriteItems = filteredItems.filter((item) => item.favorite);
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
   const itemByTarget = useMemo(() => new Map(items.map((item) => [item.target, item])), [items]);
@@ -2015,7 +2152,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
       ...editor.input,
       group: normalizeGroupValue(editor.input.group, option.group),
       aliases: uniqueList(editor.input.aliases),
-      tags: uniqueList(editor.input.tags)
+      tags: uniqueList(editor.input.tags),
+      subTag: cleanSubTag(editor.input.subTag)
     };
 
     if (!normalizedInput.title.trim() || !normalizedInput.target.trim()) {
@@ -2254,6 +2392,81 @@ export function MainApp({ windowLabel }: MainAppProps) {
     } finally {
       setBusy(false);
     }
+  }
+
+  function toggleSubTagCollapsed(path: string) {
+    const cleanPath = cleanSubTag(path);
+    setCollapsedSubTagPaths((current) =>
+      current.includes(cleanPath) ? current.filter((candidate) => candidate !== cleanPath) : [...current, cleanPath]
+    );
+  }
+
+  function renderResourceCards(cardItems: OrbitItem[]) {
+    return (
+      <SortableContext items={cardItems.map((item) => item.id)} strategy={rectSortingStrategy}>
+        {cardItems.map((item) => (
+          <SortableResourceRow
+            key={item.id}
+            item={item}
+            selectedIds={selectedIds}
+            batchMode={batchMode}
+            busy={busy}
+            toggleSelected={toggleSelected}
+            openItem={openItem}
+            groups={groups}
+            tripCounts={tripCounts}
+            showTripsAction={tripsFeatureEnabled}
+            setTripPanelItem={setTripPanelItem}
+            setTripPanelHighlightId={setTripPanelHighlightId}
+            toggleFavorite={toggleFavorite}
+            setEditor={setEditor}
+            removeItem={removeItem}
+            resourceIconStyle={resourceIconStyle}
+            isSimple={isSimple}
+            densityFactor={densityFactor}
+          />
+        ))}
+      </SortableContext>
+    );
+  }
+
+  function renderSubTagResourceSection(node: SubTagNode, depth = 0) {
+    const collapsed = collapsedSubTagPaths.includes(node.path);
+    const total = subTagNodeTotal(node);
+    return (
+      <section
+        key={node.path}
+        className="subtag-resource-section"
+        style={{ "--subtag-depth": depth } as CSSProperties}
+      >
+        <header className="subtag-resource-head">
+          <button
+            type="button"
+            className={`subtag-collapse-button ${collapsed ? "" : "expanded"}`}
+            onClick={() => toggleSubTagCollapsed(node.path)}
+            aria-label={collapsed ? "展开子目录" : "收起子目录"}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+          </button>
+          <div className="subtag-resource-title" title={subTagDisplayName(node.path)}>
+            <strong>{node.name}</strong>
+            <span>{total} 个资源</span>
+          </div>
+        </header>
+
+        {!collapsed && (
+          <div className="subtag-resource-body">
+            {node.items.length > 0 && (
+              <div className={`resource-list subtag-resource-list display-${settings?.displayMode ?? "simple"}`}>
+                {renderResourceCards(node.items)}
+              </div>
+            )}
+            {node.children.map((child) => renderSubTagResourceSection(child, depth + 1))}
+          </div>
+        )}
+      </section>
+    );
   }
 
   const handleHotkeyKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -2913,6 +3126,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
     toggleMaximizeWindow();
   };
 
+  const toggleWorkbenchPanel = () => {
+    setHideWorkbench((current) => {
+      const next = !current;
+      localStorage.setItem("orbitstart.dashboard.hide_workbench", String(next));
+      return next;
+    });
+  };
+
   function handleAppContextMenu(event: ReactMouseEvent<HTMLElement>) {
     if (activeId) {
       event.preventDefault();
@@ -3218,7 +3439,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         </button>
       </section>
 
-      <section className="dashboard-grid">
+      <section className={`dashboard-grid ${hideWorkbench ? "workbench-collapsed" : ""}`}>
         <section className="surface-panel resource-panel">
           <div className="section-head">
             <div>
@@ -3254,30 +3475,20 @@ export function MainApp({ windowLabel }: MainAppProps) {
               onDragEnd={handleDragEnd}
               onDragCancel={handleDragCancel}
             >
-              <SortableContext items={localOrder} strategy={rectSortingStrategy}>
-                {filteredItems.map((item) => (
-                  <SortableResourceRow
-                    key={item.id}
-                    item={item}
-                    selectedIds={selectedIds}
-                    batchMode={batchMode}
-                    busy={busy}
-                    toggleSelected={toggleSelected}
-                    openItem={openItem}
-                    groups={groups}
-                    tripCounts={tripCounts}
-                    showTripsAction={tripsFeatureEnabled}
-                    setTripPanelItem={setTripPanelItem}
-                    setTripPanelHighlightId={setTripPanelHighlightId}
-                    toggleFavorite={toggleFavorite}
-                    setEditor={setEditor}
-                    removeItem={removeItem}
-                    resourceIconStyle={resourceIconStyle}
-                    isSimple={isSimple}
-                    densityFactor={densityFactor}
-                  />
-                ))}
-              </SortableContext>
+              {subTagTree.length > 0 ? (
+                <>
+                  {rootResourceItems.length > 0 && renderResourceCards(rootResourceItems)}
+                  <section className="subtag-resource-block">
+                    <div className="section-head slim">
+                      <p className="eyebrow">Sub Tags</p>
+                      <h2>子目录</h2>
+                    </div>
+                    {subTagTree.map((node) => renderSubTagResourceSection(node))}
+                  </section>
+                </>
+              ) : (
+                renderResourceCards(filteredItems)
+              )}
               {createPortal(
                 <DragOverlay>
                   {activeId ? (() => {
@@ -3320,79 +3531,104 @@ export function MainApp({ windowLabel }: MainAppProps) {
           </div>
         </section>
 
-        <aside className="surface-panel operations-panel">
-          <section className="status-card">
-            <div className="status-icon">
-              <ShieldCheck size={20} />
-            </div>
-            <div>
-              <p>系统状态</p>
-              <strong>工作台运行正常</strong>
-              <span>所有核心插件已就绪</span>
-            </div>
-          </section>
-
-          {workspacesFeatureEnabled && dashboardWorkspaces.length > 0 && (
-            <section className="operation-group workspaces-operation-group">
-              <div className="section-head slim">
-                <h2>快捷工作区</h2>
+        {!hideWorkbench && (
+          <aside className="surface-panel operations-panel resource-detail-panel">
+            <div className="resource-workbench-head">
+              <div>
+                <p className="eyebrow">Workbench</p>
+                <h2>工作台</h2>
               </div>
-              <div className="dashboard-workspaces-list">
-                {dashboardWorkspaces.slice(0, 5).map((ws) => (
-                  <div key={ws.id} className="dashboard-workspace-item">
-                    <div 
-                      className="dashboard-ws-icon" 
-                      style={{ 
-                        backgroundColor: `${ws.color}15`, 
-                        color: ws.color,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center"
-                      }}
-                    >
-                      {getWorkspaceIcon(ws.icon || "Briefcase", ws.color, 16)}
-                    </div>
-                    <div className="dashboard-ws-info">
-                      <strong>{ws.name}</strong>
-                      <span>已启动 {ws.launchCount || 0} 次</span>
-                    </div>
-                    <button 
-                      type="button" 
-                      className="dashboard-ws-run-btn" 
-                      onClick={() => launchWorkspaceFromDashboard(ws.id)}
-                      title="启动此工作区"
-                    >
-                      <Play size={12} fill="currentColor" />
-                    </button>
-                  </div>
-                ))}
+              <button
+                type="button"
+                className="workbench-toggle-btn inline-toggle"
+                title="收起工作台"
+                onClick={toggleWorkbenchPanel}
+              >
+                <PanelRightClose size={16} />
+              </button>
+            </div>
+
+            <section className="status-card">
+              <div className="status-icon">
+                <ShieldCheck size={20} />
+              </div>
+              <div>
+                <p>系统状态</p>
+                <strong>工作台运行正常</strong>
+                <span>所有核心插件已就绪</span>
               </div>
             </section>
-          )}
 
-          <section className="operation-group">
-            <div className="section-head slim">
-              <h2>常用操作</h2>
-            </div>
-            <button className="wide-command" onClick={() => runNativeItemScan("shortcuts")} disabled={busy || !pluginEnabled("core-shortcuts")}>
-              <ScanSearch size={17} />
-              <span>扫描本地程序</span>
-            </button>
-            <button className="wide-command" onClick={() => runNativeItemScan("bookmarks")} disabled={busy || !pluginEnabled("core-bookmarks")}>
-              <Bookmark size={17} />
-              <span>导入浏览器书签</span>
-            </button>
-            <button className="wide-command" onClick={runExport} disabled={busy}>
-              <Download size={17} />
-              <span>导出数据备份</span>
-            </button>
-          </section>
+            {workspacesFeatureEnabled && dashboardWorkspaces.length > 0 && (
+              <section className="operation-group workspaces-operation-group">
+                <div className="section-head slim">
+                  <h2>快捷工作区</h2>
+                </div>
+                <div className="dashboard-workspaces-list">
+                  {dashboardWorkspaces.slice(0, 5).map((ws) => (
+                    <div key={ws.id} className="dashboard-workspace-item">
+                      <div
+                        className="dashboard-ws-icon"
+                        style={{
+                          backgroundColor: `${ws.color}15`,
+                          color: ws.color,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center"
+                        }}
+                      >
+                        {getWorkspaceIcon(ws.icon || "Briefcase", ws.color, 16)}
+                      </div>
+                      <div className="dashboard-ws-info">
+                        <strong>{ws.name}</strong>
+                        <span>已启动 {ws.launchCount || 0} 次</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="dashboard-ws-run-btn"
+                        onClick={() => launchWorkspaceFromDashboard(ws.id)}
+                        title="启动此工作区"
+                      >
+                        <Play size={12} fill="currentColor" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
 
-          <section className="toast-line">
-            <CheckCircle2 size={18} />
-            <span>{toast}</span>
-          </section>
-        </aside>
+            <section className="operation-group">
+              <div className="section-head slim">
+                <h2>常用操作</h2>
+              </div>
+              <button className="wide-command" onClick={addCustomGroup} disabled={busy}>
+                <PlusCircle size={17} />
+                <span>新建分组</span>
+              </button>
+              <button className="wide-command" onClick={() => runNativeItemScan("shortcuts")} disabled={busy || !pluginEnabled("core-shortcuts")}>
+                <ScanSearch size={17} />
+                <span>扫描本地程序</span>
+              </button>
+              <button className="wide-command" onClick={() => runNativeItemScan("bookmarks")} disabled={busy || !pluginEnabled("core-bookmarks")}>
+                <Bookmark size={17} />
+                <span>导入浏览器书签</span>
+              </button>
+              <button className="wide-command" onClick={runExport} disabled={busy}>
+                <Download size={17} />
+                <span>导出数据备份</span>
+              </button>
+              <button className="wide-command" onClick={() => setPaletteOpen(true)}>
+                <Command size={17} />
+                <span>打开命令面板</span>
+              </button>
+            </section>
+
+            <section className="toast-line">
+              <CheckCircle2 size={18} />
+              <span>{toast}</span>
+            </section>
+          </aside>
+        )}
       </section>
     </section>
   );
@@ -4119,7 +4355,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.6.4</strong>版本</span>
+          <span><strong>0.7.4</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -4862,6 +5098,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
               showOrbitLayer={false}
             />
           )}
+          <WindowResizeEdges />
           <header className="window-titlebar todo-titlebar" onPointerDown={handleTitlebarPointerDown} onDoubleClick={handleTitlebarDoubleClick}>
             <div className="window-brand" data-tauri-drag-region>
               <span className="window-brand-glyph">{renderBrandIcon(12)}</span>
@@ -4953,6 +5190,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
               showOrbitLayer={false}
             />
           )}
+          <WindowResizeEdges />
           <header className="window-titlebar" onPointerDown={handleTitlebarPointerDown} onDoubleClick={handleTitlebarDoubleClick}>
             <div className="window-brand" data-tauri-drag-region>
               <span className="window-brand-glyph">{renderBrandIcon(12)}</span>
@@ -5077,11 +5315,23 @@ export function MainApp({ windowLabel }: MainAppProps) {
           showOrbitLayer={activeView !== "logs"}
         />
       )}
+      <WindowResizeEdges />
       <header className="window-titlebar" onPointerDown={handleTitlebarPointerDown} onDoubleClick={handleTitlebarDoubleClick}>
         <div className="window-brand" data-tauri-drag-region>
           <span className="window-brand-glyph">{renderBrandIcon(12)}</span>
           <span>OrbitStart</span>
         </div>
+        {activeView === "dashboard" && (
+          <button
+            type="button"
+            className={`window-resource-toggle ${hideWorkbench ? "" : "active"}`}
+            title={hideWorkbench ? "展开工作台" : "收起工作台"}
+            onClick={toggleWorkbenchPanel}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {hideWorkbench ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
+          </button>
+        )}
         <div className="window-drag-fill" data-tauri-drag-region />
         <div className="window-controls" onPointerDown={(event) => event.stopPropagation()}>
           <button type="button" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>-</button>
@@ -5482,6 +5732,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
                     );
                   })}
                 </div>
+              </label>
+              <label className="wide-field">
+                子目录（可选）
+                <input
+                  value={editor.input.subTag ?? ""}
+                  onChange={(event) => setEditor({ ...editor, input: { ...editor.input, subTag: event.target.value } })}
+                  placeholder="例如：影音工具 或 影音工具/播放器"
+                />
               </label>
               <label>
                 颜色
