@@ -1272,27 +1272,6 @@ textarea:focus-visible {
   object-fit: contain;
 }
 
-.window-resource-toggle {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  margin-left: 4px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.035);
-  color: var(--muted);
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-
-.window-resource-toggle:hover,
-.window-resource-toggle.active {
-  border-color: rgba(39, 215, 198, 0.36);
-  background: rgba(39, 215, 198, 0.11);
-  color: var(--accent);
-}
-
 .window-drag-fill {
   flex: 1 1 auto;
   align-self: stretch;
@@ -1765,13 +1744,26 @@ kbd {
   font-size: 16px;
 }
 
+.group-tabs-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: 8px;
+  padding-bottom: 4px;
+}
+
 .group-tabs {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   overflow-x: auto;
-  padding-top: 8px;
-  padding-bottom: 4px;
+  min-width: 0;
+}
+
+.group-tabs-main {
+  padding: 0;
 }
 
 .group-tabs button {
@@ -1793,6 +1785,26 @@ kbd {
   border-color: rgba(39, 215, 198, 0.34);
   background: rgba(39, 215, 198, 0.1);
   color: var(--text);
+}
+
+.group-tabs-toggle {
+  position: static !important;
+  right: auto !important;
+  top: auto !important;
+  transform: none !important;
+  z-index: 1 !important;
+  flex: 0 0 auto;
+}
+
+.group-tabs-toggle:hover,
+.group-tabs-toggle:active {
+  transform: none !important;
+}
+
+.group-tabs-toggle.active {
+  border-color: rgba(39, 215, 198, 0.34) !important;
+  background: rgba(39, 215, 198, 0.1) !important;
+  color: var(--accent) !important;
 }
 
 .dashboard-grid {
@@ -9423,3 +9435,50 @@ body.bubble-menu-body #root {
     justify-content: flex-start;
   }
 }
+
+/* Workbench toggle button at tag bar row right side */
+.workbench-toggle-btn.group-tabs-toggle {
+  position: static !important;
+  transform: none !important;
+  flex-shrink: 0 !important;
+}
+
+.workbench-toggle-btn.group-tabs-toggle:hover {
+  transform: scale(1.05) !important;
+}
+
+.workbench-toggle-btn.group-tabs-toggle:active {
+  transform: scale(0.95) !important;
+}
+
+/* Compact KPI Grid within workbench */
+.workbench-kpi-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: var(--space-2) !important;
+  margin-bottom: var(--space-2) !important;
+}
+
+.workbench-kpi-card {
+  min-height: 62px !important;
+  padding: var(--space-2) var(--space-3) !important;
+  gap: 1px !important;
+  border-radius: var(--radius-md) !important;
+}
+
+.workbench-kpi-card span {
+  font-size: 11px !important;
+  margin: 0 !important;
+}
+
+.workbench-kpi-card strong {
+  font-size: 18px !important;
+}
+
+.workbench-kpi-card em {
+  font-size: 10px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  margin: 0 !important;
+}
+

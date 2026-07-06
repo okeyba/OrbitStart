@@ -171,7 +171,7 @@ const tripStatusLabels: Record<string, string> = {
 };
 
 type ViewId = "dashboard" | "trips" | "obsidian" | "workspaces" | "settings" | "logs";
-type SettingsSection = "general" | "plugins" | "themes" | "obsidian" | "dev" | "data" | "about" | "bubble";
+type SettingsSection = "general" | "workbench" | "plugins" | "themes" | "obsidian" | "dev" | "data" | "about" | "bubble";
 type AuxPanel = "settings" | "plugins" | "themes" | "about";
 type TodoPanelPayload = {
   noteId: string;
@@ -1270,7 +1270,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         });
       } else {
         if (manual) {
-          setToast("当前已是最新版本 (v0.7.4)");
+          setToast("当前已是最新版本 (v0.7.5)");
         }
       }
     } catch (err) {
@@ -2070,6 +2070,12 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const densityFactor = densityValue / 100;
   const isSimple = (settings?.displayMode ?? "simple") === "simple";
   const density = densityValue > 50 ? "compact" : "comfortable";
+  const workbenchVisible = settings?.workbenchVisible ?? !hideWorkbench;
+  const workbenchShowStatus = settings?.workbenchShowStatus ?? true;
+  const workbenchShowWorkspaces = settings?.workbenchShowWorkspaces ?? true;
+  const workbenchShowActions = settings?.workbenchShowActions ?? true;
+  const workbenchShowToast = settings?.workbenchShowToast ?? true;
+  const workbenchShowStatistics = settings?.workbenchShowStatistics ?? true;
 
   const isLocalGalaxyTheme = activeTheme?.id === "local-galaxy";
   const themeLabel = activeTheme?.name ? activeTheme.name.toUpperCase() : "ORBITSTART";
@@ -3126,12 +3132,24 @@ export function MainApp({ windowLabel }: MainAppProps) {
     toggleMaximizeWindow();
   };
 
+  async function persistWorkbenchSetting(key: string, value: boolean) {
+    const camelKey = key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()) as keyof AppSettings;
+    if (key === "workbench_visible") {
+      setHideWorkbench(!value);
+      localStorage.setItem("orbitstart.dashboard.hide_workbench", String(!value));
+    }
+    setSettings((prev) => prev ? ({ ...prev, [camelKey]: value } as AppSettings) : prev);
+    try {
+      const snapshot = await setBubbleSetting(key, value ? "true" : "false");
+      setSettings(snapshot.settings);
+    } catch (error) {
+      setToast(`工作台设置保存失败：${String(error)}`);
+    }
+  }
+
   const toggleWorkbenchPanel = () => {
-    setHideWorkbench((current) => {
-      const next = !current;
-      localStorage.setItem("orbitstart.dashboard.hide_workbench", String(next));
-      return next;
-    });
+    const nextVisible = !workbenchVisible;
+    void persistWorkbenchSetting("workbench_visible", nextVisible);
   };
 
   function handleAppContextMenu(event: ReactMouseEvent<HTMLElement>) {
@@ -3388,58 +3406,45 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   const renderDashboard = () => (
     <section className="page-layout dashboard-page">
-      <section className="kpi-grid" aria-label="工作台概览">
-        <article className="kpi-card">
-          <span>资源总数</span>
-          <strong>{items.length}</strong>
-          <em>本地入口与链接</em>
-        </article>
-        <article className="kpi-card">
-          <span>启用插件</span>
-          <strong>{enabledPlugins}</strong>
-          <em>{plugins.length} 个可用模块</em>
-        </article>
-        <article className="kpi-card">
-          <span>主题方案</span>
-          <strong>{themes.length}</strong>
-          <em>{activeTheme?.name ?? "默认主题"}</em>
-        </article>
-        <article className="kpi-card">
-          <span>安全模式</span>
-          <strong>{settings?.safeMode ? "启用" : "关闭"}</strong>
-          <em>第三方扩展控制</em>
-        </article>
-      </section>
-
-      <section className="group-tabs" aria-label="资源分组">
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragStart={handleGroupDragStart}
-          onDragEnd={handleGroupDragEnd}
-          onDragCancel={handleGroupDragCancel}
-          modifiers={[restrictToHorizontalAxis]}
+      <section className="group-tabs-row" aria-label="资源分组">
+        <div className="group-tabs group-tabs-main">
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleGroupDragStart}
+            onDragEnd={handleGroupDragEnd}
+            onDragCancel={handleGroupDragCancel}
+            modifiers={[restrictToHorizontalAxis]}
+          >
+            <SortableContext items={visibleGroups.map((g) => g.id)} strategy={horizontalListSortingStrategy}>
+              {visibleGroups.map((group) => (
+                <SortableGroupTab
+                  key={group.id}
+                  group={group}
+                  activeGroup={activeGroup}
+                  setActiveGroup={setActiveGroup}
+                  hotkey={hotkeysBoundToGroup[group.id]}
+                  hotkeyBinderEnabled={hotkeyBinderEnabled}
+                />
+              ))}
+            </SortableContext>
+          </DndContext>
+          <button className="add-group-tab" onClick={addCustomGroup} disabled={busy}>
+            <PlusCircle size={16} />
+            <span>新分组</span>
+          </button>
+        </div>
+        <button
+          type="button"
+          className={`workbench-toggle-btn group-tabs-toggle ${workbenchVisible ? "active" : ""}`}
+          title={workbenchVisible ? "收起工作台" : "展开工作台"}
+          onClick={toggleWorkbenchPanel}
         >
-          <SortableContext items={visibleGroups.map((g) => g.id)} strategy={horizontalListSortingStrategy}>
-            {visibleGroups.map((group) => (
-              <SortableGroupTab
-                key={group.id}
-                group={group}
-                activeGroup={activeGroup}
-                setActiveGroup={setActiveGroup}
-                hotkey={hotkeysBoundToGroup[group.id]}
-                hotkeyBinderEnabled={hotkeyBinderEnabled}
-              />
-            ))}
-          </SortableContext>
-        </DndContext>
-        <button className="add-group-tab" onClick={addCustomGroup} disabled={busy}>
-          <PlusCircle size={16} />
-          <span>新分组</span>
+          {workbenchVisible ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
         </button>
       </section>
 
-      <section className={`dashboard-grid ${hideWorkbench ? "workbench-collapsed" : ""}`}>
+      <section className={`dashboard-grid ${workbenchVisible ? "" : "workbench-collapsed"}`}>
         <section className="surface-panel resource-panel">
           <div className="section-head">
             <div>
@@ -3531,23 +3536,41 @@ export function MainApp({ windowLabel }: MainAppProps) {
           </div>
         </section>
 
-        {!hideWorkbench && (
+        {workbenchVisible && (
           <aside className="surface-panel operations-panel resource-detail-panel">
             <div className="resource-workbench-head">
               <div>
                 <p className="eyebrow">Workbench</p>
                 <h2>工作台</h2>
               </div>
-              <button
-                type="button"
-                className="workbench-toggle-btn inline-toggle"
-                title="收起工作台"
-                onClick={toggleWorkbenchPanel}
-              >
-                <PanelRightClose size={16} />
-              </button>
             </div>
 
+            {workbenchShowStatistics && (
+              <section className="kpi-grid workbench-kpi-grid" aria-label="工作台概览">
+                <article className="kpi-card workbench-kpi-card">
+                  <span>资源总数</span>
+                  <strong>{items.length}</strong>
+                  <em>本地入口与链接</em>
+                </article>
+                <article className="kpi-card workbench-kpi-card">
+                  <span>启用插件</span>
+                  <strong>{enabledPlugins}</strong>
+                  <em>{plugins.length} 个可用模块</em>
+                </article>
+                <article className="kpi-card workbench-kpi-card">
+                  <span>主题方案</span>
+                  <strong>{themes.length}</strong>
+                  <em title={activeTheme?.name ?? "默认主题"}>{activeTheme?.name ?? "默认主题"}</em>
+                </article>
+                <article className="kpi-card workbench-kpi-card">
+                  <span>安全模式</span>
+                  <strong>{settings?.safeMode ? "启用" : "关闭"}</strong>
+                  <em>第三方扩展控制</em>
+                </article>
+              </section>
+            )}
+
+            {workbenchShowStatus && (
             <section className="status-card">
               <div className="status-icon">
                 <ShieldCheck size={20} />
@@ -3558,8 +3581,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <span>所有核心插件已就绪</span>
               </div>
             </section>
+            )}
 
-            {workspacesFeatureEnabled && dashboardWorkspaces.length > 0 && (
+            {workbenchShowWorkspaces && workspacesFeatureEnabled && dashboardWorkspaces.length > 0 && (
               <section className="operation-group workspaces-operation-group">
                 <div className="section-head slim">
                   <h2>快捷工作区</h2>
@@ -3597,6 +3621,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
               </section>
             )}
 
+            {workbenchShowActions && (
             <section className="operation-group">
               <div className="section-head slim">
                 <h2>常用操作</h2>
@@ -3622,11 +3647,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 <span>打开命令面板</span>
               </button>
             </section>
+            )}
 
+            {workbenchShowToast && (
             <section className="toast-line">
               <CheckCircle2 size={18} />
               <span>{toast}</span>
             </section>
+            )}
           </aside>
         )}
       </section>
@@ -4129,6 +4157,77 @@ export function MainApp({ windowLabel }: MainAppProps) {
     </section>
   );
 
+  const renderWorkbenchSettings = () => (
+    <section className="settings-page-grid workbench-settings">
+      <div className="setting-card wide-card">
+        <p className="eyebrow">Workbench</p>
+        <h2>工作台显示</h2>
+        <p>控制首页右侧工作台是否显示，以及工作台内保留哪些内容块。</p>
+        <div className="setting-list">
+          <label className="setting-inline">
+            <input
+              type="checkbox"
+              checked={workbenchVisible}
+              onChange={(event) => void persistWorkbenchSetting("workbench_visible", event.target.checked)}
+            />
+            显示工作台
+          </label>
+          <label className="setting-inline">
+            <input
+              type="checkbox"
+              checked={workbenchShowStatus}
+              onChange={(event) => void persistWorkbenchSetting("workbench_show_status", event.target.checked)}
+              disabled={!workbenchVisible}
+            />
+            显示系统状态
+          </label>
+          <label className="setting-inline">
+            <input
+              type="checkbox"
+              checked={workbenchShowWorkspaces}
+              onChange={(event) => void persistWorkbenchSetting("workbench_show_workspaces", event.target.checked)}
+              disabled={!workbenchVisible}
+            />
+            显示快捷工作区
+          </label>
+          <label className="setting-inline">
+            <input
+              type="checkbox"
+              checked={workbenchShowActions}
+              onChange={(event) => void persistWorkbenchSetting("workbench_show_actions", event.target.checked)}
+              disabled={!workbenchVisible}
+            />
+            显示常用操作
+          </label>
+          <label className="setting-inline">
+            <input
+              type="checkbox"
+              checked={workbenchShowToast}
+              onChange={(event) => void persistWorkbenchSetting("workbench_show_toast", event.target.checked)}
+              disabled={!workbenchVisible}
+            />
+            显示状态提示
+          </label>
+          <label className="setting-inline">
+            <input
+              type="checkbox"
+              checked={workbenchShowStatistics}
+              onChange={(event) => void persistWorkbenchSetting("workbench_show_statistics", event.target.checked)}
+              disabled={!workbenchVisible}
+            />
+            显示信息统计
+          </label>
+        </div>
+      </div>
+
+      <div className="setting-card">
+        <p className="eyebrow">Layout</p>
+        <h2>开关位置</h2>
+        <p>工作台展开/收起按钮固定在根标签栏右侧，标签较多时仅标签区域横向滚动，按钮不会被遮挡。</p>
+      </div>
+    </section>
+  );
+
   const renderBubbleSettings = () => {
     const bubbleOpacityValue = bubbleOpacityDraft ?? settings?.bubbleOpacity ?? 1.0;
 
@@ -4355,7 +4454,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span><strong>{items.length}</strong>资源</span>
           <span><strong>{enabledPlugins}</strong>启用插件</span>
           <span><strong>{themes.length}</strong>主题</span>
-          <span><strong>0.7.4</strong>版本</span>
+          <span><strong>0.7.5</strong>版本</span>
         </div>
       </div>
       <div className="setting-card">
@@ -4449,6 +4548,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const renderSettings = () => {
     const sections: Array<{ id: SettingsSection; title: string; icon: JSX.Element }> = [
       { id: "general", title: "基础设置", icon: <Settings size={18} /> },
+      { id: "workbench", title: "工作台", icon: <PanelsTopLeft size={18} /> },
       { id: "plugins", title: "插件管理", icon: <Blocks size={18} /> },
       { id: "themes", title: "主题工作室", icon: <Palette size={18} /> },
       ...(obsidianFeatureEnabled ? [{ id: "obsidian" as const, title: "Obsidian", icon: <NotebookText size={18} /> }] : []),
@@ -4469,6 +4569,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         </aside>
         <div className="settings-content">
           {settingsSection === "general" && renderGeneralSettings()}
+          {settingsSection === "workbench" && renderWorkbenchSettings()}
           {settingsSection === "plugins" && renderPlugins()}
           {settingsSection === "themes" && renderThemes()}
           {settingsSection === "obsidian" && obsidianFeatureEnabled && renderObsidianSettings()}
@@ -5321,17 +5422,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span className="window-brand-glyph">{renderBrandIcon(12)}</span>
           <span>OrbitStart</span>
         </div>
-        {activeView === "dashboard" && (
-          <button
-            type="button"
-            className={`window-resource-toggle ${hideWorkbench ? "" : "active"}`}
-            title={hideWorkbench ? "展开工作台" : "收起工作台"}
-            onClick={toggleWorkbenchPanel}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            {hideWorkbench ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
-          </button>
-        )}
         <div className="window-drag-fill" data-tauri-drag-region />
         <div className="window-controls" onPointerDown={(event) => event.stopPropagation()}>
           <button type="button" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>-</button>

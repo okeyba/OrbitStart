@@ -239,6 +239,12 @@ export interface AppSettings {
   autoPinnedMode: boolean;
   displayMode: "simple" | "detailed" | string;
   resourceMode?: "hierarchical" | "single" | string;
+  workbenchVisible?: boolean;
+  workbenchShowStatus?: boolean;
+  workbenchShowWorkspaces?: boolean;
+  workbenchShowActions?: boolean;
+  workbenchShowToast?: boolean;
+  workbenchShowStatistics?: boolean;
   hotkeyBehavior: "command_bar" | "open_only" | string;
   bubbleEnabled: boolean;
   bubbleShowWhenMainHidden: boolean;

@@ -171,9 +171,29 @@ test.describe('OrbitStart E2E Basic Verification', () => {
     await expect(page.locator('.context-menu')).toContainText('打开所在位置');
   });
 
-  test('should show version 0.7.4 on the about page', async ({ page }) => {
+  test('should control the workbench from the group tab row and settings page', async ({ page }) => {
+    await expect(page.locator('.window-resource-toggle')).toHaveCount(0);
+    await expect(page.locator('.group-tabs-row .group-tabs-toggle')).toBeVisible();
+    await expect(page.locator('.resource-detail-panel')).toBeVisible();
+
+    await page.locator('.group-tabs-row .group-tabs-toggle').click();
+    await expect(page.locator('.resource-detail-panel')).toHaveCount(0);
+    await expect(page.locator('.dashboard-grid')).toHaveClass(/workbench-collapsed/);
+
+    await page.locator('.group-tabs-row .group-tabs-toggle').click();
+    await expect(page.locator('.resource-detail-panel')).toBeVisible();
+
+    await page.goto('/?panel=settings');
+    await page.waitForSelector('.settings-shell', { timeout: 10000 });
+    await page.locator('.settings-menu button', { hasText: '工作台' }).click();
+    await expect(page.locator('.workbench-settings')).toBeVisible();
+    await expect(page.locator('label', { hasText: '显示工作台' }).locator('input')).toBeChecked();
+    await expect(page.locator('label', { hasText: '显示常用操作' }).locator('input')).toBeChecked();
+  });
+
+  test('should show version 0.7.5 on the about page', async ({ page }) => {
     await page.goto('/?panel=about');
     await page.waitForSelector('.app-shell', { timeout: 10000 });
-    await expect(page.locator('.about-card')).toContainText('0.7.4');
+    await expect(page.locator('.about-card')).toContainText('0.7.5');
   });
 });
