@@ -5,8 +5,6 @@ import {
   Bookmark,
   CheckCircle2,
   ChevronRight,
-  PanelRightClose,
-  PanelRightOpen,
   CircleDot,
   Command,
   Copy,
@@ -54,11 +52,11 @@ import {
   Keyboard,
   Play
 } from "lucide-react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { DndContext, closestCenter, pointerWithin, MouseSensor, TouchSensor, useDroppable, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay, type CollisionDetection } from "@dnd-kit/core";
+import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragEndEvent, DragStartEvent, DragOverlay } from "@dnd-kit/core";
 import { createPortal } from "react-dom";
-import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { SortableContext, arrayMove, rectSortingStrategy, useSortable, horizontalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { emit } from "@tauri-apps/api/event";
 import { LocalGalaxyBackdrop } from "./components/LocalGalaxyBackdrop";
@@ -124,7 +122,6 @@ import {
   setSafeMode,
   setAutoPinnedMode,
   setDisplayMode,
-  setResourceMode,
   setHotkeyBehavior,
   toggleObsidianNoteFavorite,
   tripCountForItems,
@@ -155,7 +152,6 @@ import type {
   OrbitItemInput,
   OrbitPluginManifest,
   PluginLog,
-  ResourceFolder,
   SearchResult,
   ThemeManifest,
   TripSearchResult
@@ -188,12 +184,9 @@ type ImportFilterReason = {
 };
 type AppDialogState =
   | { type: "group"; value: string }
-  | { type: "folder"; parentId: string | null; name: string; icon: string; color: string }
-  | { type: "rename-folder"; folderId: string; name: string; icon: string; color: string }
   | { type: "delete-item"; item: OrbitItem }
   | { type: "batch-delete" }
   | { type: "batch-move"; groupId: string }
-  | { type: "batch-folder-move"; folderId: string }
   | { type: "template"; value: string }
   | { type: "group-hotkey"; groupId: string; value: string }
   | { type: "app-update"; version: string; body: string; pendingUpdate: any };
@@ -333,7 +326,6 @@ function buildDefaultImportSelection(kind: "shortcuts" | "bookmarks", items: Orb
 
 const iconMap = {
   AppWindow,
-  Briefcase,
   Blocks,
   Bookmark,
   Copy,
@@ -359,9 +351,7 @@ const iconMap = {
   Save,
   ScanSearch,
   Search,
-  Settings,
   Sparkles,
-  Star,
   TerminalSquare,
   Upload,
   Workflow
@@ -388,11 +378,10 @@ type EditorState =
     };
 
 function Icon({ name, size = 22 }: { name: string; size?: number }) {
-  const cleanName = name.trim();
-  if (cleanName.toLowerCase().startsWith("data:image")) {
-    return <img className="custom-resource-icon" src={cleanName} alt="" width={size} height={size} draggable={false} />;
+  if (name.startsWith("data:image/")) {
+    return <img src={name} alt="" width={size} height={size} />;
   }
-  const Component = iconMap[cleanName as keyof typeof iconMap] ?? CircleDot;
+  const Component = iconMap[name as keyof typeof iconMap] ?? CircleDot;
   return <Component size={size} strokeWidth={1.8} />;
 }
 
@@ -449,680 +438,8 @@ function itemHasGroup(item: Pick<OrbitItem, "group">, groupId: string) {
   return splitGroupIds(item.group).includes(groupId);
 }
 
-const resourceFolderStorageKey = "orbitstart.resource.folders.v1";
-const specialFolderIds = new Set(["all", "favorites", "recent", "uncategorized"]);
-const defaultFilterTags = ["收藏", "常用", "AI", "学习", "生信", "待整理"];
-const hiddenAutoTags = new Set([
-  "scan",
-  "shortcut",
-  "bookmark",
-  "browser",
-  "template",
-  "drag-drop",
-  "folder",
-  "automation",
-  "app",
-  "apps",
-  "website",
-  "web",
-  "file",
-  "work",
-  "script",
-  "scripts",
-  "plugin",
-  "plugins",
-  "dev",
-  "editor",
-  "project",
-  "system",
-  "lnk",
-  "exe",
-  "msi",
-  "appref-ms",
-  "url",
-  "html",
-  "htm",
-  "pdf",
-  "doc",
-  "docx",
-  "xls",
-  "xlsx",
-  "ppt",
-  "pptx",
-  "png",
-  "jpg",
-  "jpeg",
-  "ico"
-]);
-
-const defaultResourceFolders: ResourceFolder[] = [
-  {
-    id: "all",
-    name: "全部资源",
-    parentId: null,
-    kind: "root",
-    icon: "Grid3X3",
-    color: "#27d7c6",
-    description: "所有已添加到 OrbitStart 的本地入口、网址与自动化资源。",
-    sortOrder: 0,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "apps",
-    name: "应用",
-    parentId: null,
-    kind: "app",
-    icon: "AppWindow",
-    color: "#5cc8ff",
-    description: "程序、快捷方式和系统工具。",
-    sortOrder: 10,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "apps-dev",
-    name: "开发工具",
-    parentId: "apps",
-    kind: "app",
-    icon: "FileCode2",
-    color: "#5cc8ff",
-    description: "编辑器、终端、SDK 与开发辅助工具。",
-    sortOrder: 11,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "apps-office",
-    name: "办公软件",
-    parentId: "apps",
-    kind: "app",
-    icon: "FileText",
-    color: "#d6a85c",
-    description: "文档、表格、演示与日常办公入口。",
-    sortOrder: 12,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "apps-system",
-    name: "系统工具",
-    parentId: "apps",
-    kind: "app",
-    icon: "Settings",
-    color: "#8f9aaf",
-    description: "系统设置、维护和诊断工具。",
-    sortOrder: 13,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "web",
-    name: "网站",
-    parentId: null,
-    kind: "website",
-    icon: "Globe",
-    color: "#37d6bf",
-    description: "常用网页、浏览器书签和在线控制台。",
-    sortOrder: 20,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "academic-sites",
-    name: "学术网站",
-    parentId: "web",
-    kind: "website",
-    icon: "NotebookText",
-    color: "#d6a85c",
-    description: "收录各类学术平台、文献检索与科研辅助网站，助力高效科研。",
-    sortOrder: 21,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "literature-search",
-    name: "文献检索",
-    parentId: "academic-sites",
-    kind: "website",
-    icon: "Search",
-    color: "#37d6bf",
-    description: "论文、预印本、专利与引用检索入口。",
-    sortOrder: 22,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "submission-systems",
-    name: "投稿系统",
-    parentId: "academic-sites",
-    kind: "website",
-    icon: "Upload",
-    color: "#d6a85c",
-    description: "期刊投稿、审稿和稿件追踪系统。",
-    sortOrder: 23,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "bio-databases",
-    name: "生信数据库",
-    parentId: "academic-sites",
-    kind: "website",
-    icon: "Database",
-    color: "#41e0a8",
-    description: "生物信息数据库、基因组和组学资源。",
-    sortOrder: 24,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "journal-sites",
-    name: "期刊官网",
-    parentId: "academic-sites",
-    kind: "website",
-    icon: "Bookmark",
-    color: "#d6a85c",
-    description: "期刊主页、指南、影响因子和出版政策。",
-    sortOrder: 25,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "ai-academic-tools",
-    name: "AI 学术工具",
-    parentId: "academic-sites",
-    kind: "website",
-    icon: "Sparkles",
-    color: "#7a6cff",
-    description: "辅助阅读、写作、总结和科研检索的 AI 工具。",
-    sortOrder: 26,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "ai-tools",
-    name: "AI 工具",
-    parentId: "web",
-    kind: "website",
-    icon: "Sparkles",
-    color: "#7a6cff",
-    description: "跨场景 AI 服务和在线工具。",
-    sortOrder: 27,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "video-resources",
-    name: "剪辑资源",
-    parentId: "web",
-    kind: "website",
-    icon: "PanelsTopLeft",
-    color: "#ff7a90",
-    description: "素材、剪辑、字幕和视频工作流入口。",
-    sortOrder: 28,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "work",
-    name: "文件",
-    parentId: null,
-    kind: "file",
-    icon: "FolderOpen",
-    color: "#8bd450",
-    description: "本地文件、文件夹、课程资料和项目资料。",
-    sortOrder: 30,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "project-files",
-    name: "项目资料",
-    parentId: "work",
-    kind: "file",
-    icon: "FolderKanban",
-    color: "#8bd450",
-    description: "项目文件夹、资料包和交付物入口。",
-    sortOrder: 31,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "course-files",
-    name: "课程资料",
-    parentId: "work",
-    kind: "file",
-    icon: "NotebookText",
-    color: "#d6a85c",
-    description: "课程、讲义、作业和学习资料。",
-    sortOrder: 32,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "scripts",
-    name: "脚本",
-    parentId: null,
-    kind: "custom",
-    icon: "TerminalSquare",
-    color: "#41e0a8",
-    description: "PowerShell、Node、Python 等自动化脚本入口。",
-    sortOrder: 40,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "plugins",
-    name: "插件",
-    parentId: null,
-    kind: "custom",
-    icon: "Blocks",
-    color: "#7a6cff",
-    description: "插件提供的资源、命令和扩展入口。",
-    sortOrder: 50,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "workspaces",
-    name: "工作区",
-    parentId: null,
-    kind: "workspace",
-    icon: "Briefcase",
-    color: "#d6a85c",
-    description: "一键启动多个资源的场景化入口。",
-    sortOrder: 60,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "orbitstart-dev",
-    name: "OrbitStart 开发",
-    parentId: "workspaces",
-    kind: "workspace",
-    icon: "FileCode2",
-    color: "#37d6bf",
-    description: "OrbitStart 项目开发、构建和验证入口。",
-    sortOrder: 61,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "biochem-course",
-    name: "生化课程",
-    parentId: "workspaces",
-    kind: "workspace",
-    icon: "NotebookText",
-    color: "#d6a85c",
-    description: "生物化学课程相关资料与工作区。",
-    sortOrder: 62,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "favorites",
-    name: "收藏",
-    parentId: null,
-    kind: "favorite",
-    icon: "Bookmark",
-    color: "#d6a85c",
-    description: "所有已收藏资源的快捷入口。",
-    sortOrder: 70,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "recent",
-    name: "最近添加",
-    parentId: null,
-    kind: "recent",
-    icon: "RefreshCcw",
-    color: "#27d7c6",
-    description: "近期加入或排序靠前的资源入口。",
-    sortOrder: 80,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  },
-  {
-    id: "uncategorized",
-    name: "未分类",
-    parentId: null,
-    kind: "custom",
-    icon: "FolderSearch",
-    color: "#8f9aaf",
-    description: "尚未放入明确目录的资源。",
-    sortOrder: 90,
-    createdAt: "system",
-    updatedAt: "system",
-    source: "system"
-  }
-];
-
-const deprecatedDefaultResourceFolderIds = new Set([
-  "apps-dev",
-  "apps-office",
-  "apps-system",
-  "academic-sites",
-  "literature-search",
-  "submission-systems",
-  "bio-databases",
-  "journal-sites",
-  "ai-academic-tools",
-  "ai-tools",
-  "video-resources",
-  "project-files",
-  "course-files",
-  "orbitstart-dev",
-  "biochem-course"
-]);
-
-const activeDefaultResourceFolders = defaultResourceFolders.filter((folder) => !deprecatedDefaultResourceFolderIds.has(folder.id));
-
-const folderKindLabels: Record<string, string> = {
-  root: "资源集合",
-  app: "应用分类",
-  website: "网站分类",
-  file: "文件分类",
-  workspace: "工作区分类",
-  favorite: "收藏入口",
-  recent: "最近入口",
-  custom: "自定义目录"
-};
-
-function folderTimeLabel(value?: string) {
-  if (!value || value === "system" || value === "legacy-group") return "系统目录";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "系统目录";
-  return date.toLocaleDateString("zh-CN");
-}
-
-function readStoredResourceFolders(): ResourceFolder[] {
-  if (typeof window === "undefined") return [];
-  const raw = window.localStorage.getItem(resourceFolderStorageKey);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as ResourceFolder[];
-    return parsed.filter((folder) => folder && typeof folder.id === "string" && typeof folder.name === "string");
-  } catch {
-    return [];
-  }
-}
-
-function writeStoredResourceFolders(folders: ResourceFolder[]) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(resourceFolderStorageKey, JSON.stringify(folders));
-}
-
-function buildResourceFolders(groups: OrbitGroup[], storedFolders: ResourceFolder[]) {
-  const folderById = new Map<string, ResourceFolder>();
-  const defaultIds = new Set(activeDefaultResourceFolders.map((folder) => folder.id));
-
-  activeDefaultResourceFolders.forEach((folder) => folderById.set(folder.id, folder));
-
-  storedFolders.forEach((folder, index) => {
-    if (!folder.id) return;
-    if (deprecatedDefaultResourceFolderIds.has(folder.id) && folder.source !== "user" && folder.source !== "group") {
-      return;
-    }
-    const existing = folderById.get(folder.id);
-    if (existing) {
-      folderById.set(folder.id, {
-        ...existing,
-        parentId: folder.parentId ?? null,
-        sortOrder: Number.isFinite(folder.sortOrder) ? folder.sortOrder : existing.sortOrder,
-        updatedAt: folder.updatedAt || existing.updatedAt,
-        source: existing.source
-      });
-      return;
-    }
-
-    folderById.set(folder.id, {
-      ...folder,
-      parentId: folder.parentId ?? null,
-      sortOrder: Number.isFinite(folder.sortOrder) ? folder.sortOrder : 1000 + index,
-      source: folder.source ?? "user"
-    });
-  });
-
-  groups.forEach((group, index) => {
-    if (group.id === "all" || folderById.has(group.id)) return;
-    folderById.set(group.id, {
-      id: group.id,
-      name: group.title,
-      parentId: null,
-      kind: "custom",
-      icon: group.icon || "Bookmark",
-      color: "#d6a85c",
-      description: group.description || `由旧分组「${group.title}」兼容生成的一级目录。`,
-      sortOrder: 2000 + index,
-      createdAt: "legacy-group",
-      updatedAt: "legacy-group",
-      source: "group"
-    });
-  });
-
-  const folders = Array.from(folderById.values());
-  const folderIds = new Set(folders.map((folder) => folder.id));
-  return folders
-    .map((folder) => ({
-      ...folder,
-      parentId:
-        folder.parentId && folderIds.has(folder.parentId) && folder.parentId !== folder.id
-          ? folder.parentId
-          : null,
-      source: defaultIds.has(folder.id) ? "system" : folder.source
-    }))
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh-Hans-CN"));
-}
-
-function getFolderChildren(folderId: string | null, folders: ResourceFolder[]) {
-  return folders.filter((folder) => (folder.parentId ?? null) === folderId);
-}
-
-function getFolderById(folderId: string, folders: ResourceFolder[]) {
-  return folders.find((folder) => folder.id === folderId) ?? folders.find((folder) => folder.id === "all") ?? null;
-}
-
-function getFolderPath(folderId: string, folders: ResourceFolder[]) {
-  const byId = new Map(folders.map((folder) => [folder.id, folder]));
-  const path: ResourceFolder[] = [];
-  const visited = new Set<string>();
-  let current = byId.get(folderId);
-  while (current && !visited.has(current.id)) {
-    visited.add(current.id);
-    path.unshift(current);
-    current = current.parentId ? byId.get(current.parentId) : undefined;
-  }
-  return path;
-}
-
-function defaultFolderForKind(kind: string) {
-  if (kind === "app") return "apps";
-  if (kind === "website") return "web";
-  if (kind === "script") return "scripts";
-  if (kind === "action_chain") return "workspaces";
-  if (kind === "file" || kind === "folder") return "work";
-  return "uncategorized";
-}
-
-function isAssignableFolder(folderId: string, folders: ResourceFolder[]) {
-  return folders.some((folder) => folder.id === folderId) && !specialFolderIds.has(folderId);
-}
-
-function primaryFolderIdFromGroup(value: string, kind: string, folders: ResourceFolder[]) {
-  const folderIds = new Set(folders.map((folder) => folder.id));
-  const ids = splitGroupIds(value);
-  const explicit = ids.find((id) => folderIds.has(id) && isAssignableFolder(id, folders));
-  if (explicit) return explicit;
-  const fallback = defaultFolderForKind(kind);
-  return folderIds.has(fallback) ? fallback : "uncategorized";
-}
-
-function primaryFolderIdForItem(item: Pick<OrbitItem, "group" | "kind">, folders: ResourceFolder[]) {
-  return primaryFolderIdFromGroup(item.group, item.kind, folders);
-}
-
-function setPrimaryFolderInGroup(value: string, folderId: string, kind: string, folders: ResourceFolder[]) {
-  const safeFolderId = isAssignableFolder(folderId, folders) ? folderId : defaultFolderForKind(kind);
-  const currentPrimary = primaryFolderIdFromGroup(value, kind, folders);
-  const remaining = splitGroupIds(value).filter((id) => id !== safeFolderId && id !== currentPrimary);
-  return normalizeGroupValue(joinGroupIds([safeFolderId, ...remaining]), defaultFolderForKind(kind));
-}
-
-function createFolderId(name: string) {
-  const slug = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 32);
-  return `folder-${slug || "custom"}-${Date.now().toString(36)}`;
-}
-
-function folderDropId(folderId: string) {
-  return `folder-drop:${folderId}`;
-}
-
-function folderIdFromDropId(id: string) {
-  return id.startsWith("folder-drop:") ? id.slice("folder-drop:".length) : null;
-}
-
-function folderSortId(folderId: string) {
-  return `folder-sort:${folderId}`;
-}
-
-function folderIdFromSortId(id: string) {
-  return id.startsWith("folder-sort:") ? id.slice("folder-sort:".length) : null;
-}
-
-function canMoveFolder(folderId: string) {
-  return Boolean(folderId) && folderId !== "all" && !specialFolderIds.has(folderId);
-}
-
-function canReceiveFolder(folderId: string, folders: ResourceFolder[]) {
-  return folderId === "all" || isAssignableFolder(folderId, folders);
-}
-
-function isFolderDescendant(folderId: string, possibleDescendantId: string, folders: ResourceFolder[]) {
-  let current = getFolderById(possibleDescendantId, folders);
-  const visited = new Set<string>();
-  while (current?.parentId && !visited.has(current.id)) {
-    if (current.parentId === folderId) return true;
-    visited.add(current.id);
-    current = getFolderById(current.parentId, folders);
-  }
-  return false;
-}
-
-const resourceFolderCollisionDetection: CollisionDetection = (args) => {
-  const pointerCollisions = pointerWithin(args);
-  if (folderIdFromSortId(String(args.active.id))) {
-    const folderSortCollision = pointerCollisions.find((collision) => folderIdFromSortId(String(collision.id)));
-    if (folderSortCollision) return [folderSortCollision];
-  }
-  const folderCollision = pointerCollisions.find((collision) => folderIdFromDropId(String(collision.id)));
-  return folderCollision ? [folderCollision] : closestCenter(args);
-};
-
-function itemMatchesFolder(item: OrbitItem, folderId: string, folders: ResourceFolder[]) {
-  if (folderId === "all") return true;
-  if (folderId === "favorites") return Boolean(item.favorite);
-  if (folderId === "recent") return true;
-  if (folderId === "uncategorized") {
-    const groupIds = splitGroupIds(item.group);
-    const folderIds = new Set(folders.map((folder) => folder.id));
-    return groupIds.length === 0 || groupIds.every((id) => !folderIds.has(id));
-  }
-  return primaryFolderIdForItem(item, folders) === folderId;
-}
-
-function displayTagName(tag: string) {
-  const clean = tag.trim();
-  if (!clean) return "";
-  const lower = clean.toLowerCase();
-  if (lower === "ai" || lower === "artificial-intelligence") return "AI";
-  if (lower === "study" || lower === "learning") return "学习";
-  if (lower === "bio" || lower === "bioinfo" || lower === "bioinformatics") return "生信";
-  return clean;
-}
-
-function shouldDisplayResourceTag(tag: string) {
-  const display = displayTagName(tag);
-  if (!display) return false;
-  if (defaultFilterTags.includes(display)) return true;
-  const lower = display.toLowerCase();
-  if (hiddenAutoTags.has(lower)) return false;
-  if (/^[a-z0-9]{1,5}$/.test(lower) && !["ai"].includes(lower)) return false;
-  return true;
-}
-
-function tagMatchesItem(item: OrbitItem, tag: string, groups: OrbitGroup[] = []) {
-  if (tag === "收藏") return Boolean(item.favorite);
-  if (tag === "常用") return (item.launchCount ?? 0) > 0;
-  const cleanTag = displayTagName(tag);
-  if (item.tags.some((itemTag) => displayTagName(itemTag).toLowerCase() === cleanTag.toLowerCase())) return true;
-  const group = groups.find((candidate) => candidate.custom && candidate.title.toLowerCase() === cleanTag.toLowerCase());
-  return group ? itemHasGroup(item, group.id) : false;
-}
-
-function buildTagStats(items: OrbitItem[], groups: OrbitGroup[] = []) {
-  const counts = new Map<string, number>();
-  const add = (tag: string) => {
-    const clean = displayTagName(tag);
-    if (!shouldDisplayResourceTag(clean)) return;
-    counts.set(clean, (counts.get(clean) ?? 0) + 1);
-  };
-  items.forEach((item) => {
-    if (item.favorite) add("收藏");
-    if ((item.launchCount ?? 0) > 0) add("常用");
-    item.tags.forEach(add);
-    groups.forEach((group) => {
-      if (group.custom && itemHasGroup(item, group.id)) {
-        add(group.title);
-      }
-    });
-  });
-  return Array.from(counts.entries())
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => {
-      const priority = (name: string) => {
-        const index = defaultFilterTags.indexOf(name);
-        return index >= 0 ? index : defaultFilterTags.length;
-      };
-      return priority(a.name) - priority(b.name) || b.count - a.count || a.name.localeCompare(b.name, "zh-Hans-CN");
-    });
-}
-
-function groupLabelsForItem(item: Pick<OrbitItem, "group">, groups: OrbitGroup[], folders: ResourceFolder[] = []) {
+function groupLabelsForItem(item: Pick<OrbitItem, "group">, groups: OrbitGroup[]) {
   const titleById = new Map(groups.map((group) => [group.id, group.title]));
-  folders.forEach((folder) => {
-    if (!titleById.has(folder.id)) titleById.set(folder.id, folder.name);
-  });
   return splitGroupIds(item.group).map((id) => ({ id, title: titleById.get(id) ?? id }));
 }
 
@@ -1273,118 +590,6 @@ function SortableGroupTab({
   );
 }
 
-interface ResourceTreeItemButtonProps {
-  folder: ResourceFolder;
-  depth: number;
-  selected: boolean;
-  expanded: boolean;
-  hasChildren: boolean;
-  count: number;
-  canDrop: boolean;
-  canMove: boolean;
-  canReceiveFolderMove: boolean;
-  onSelect: () => void;
-  onToggle: (event: ReactMouseEvent<HTMLSpanElement>) => void;
-}
-
-function ResourceTreeItemButton({
-  folder,
-  depth,
-  selected,
-  expanded,
-  hasChildren,
-  count,
-  canDrop,
-  canMove,
-  canReceiveFolderMove,
-  onSelect,
-  onToggle
-}: ResourceTreeItemButtonProps) {
-  const { isOver, setNodeRef: setDropNodeRef } = useDroppable({
-    id: folderDropId(folder.id),
-    disabled: !canDrop && !canReceiveFolderMove
-  });
-  const {
-    attributes,
-    listeners,
-    setNodeRef: setSortableNodeRef,
-    transform,
-    transition,
-    isDragging
-  } = useSortable({
-    id: folderSortId(folder.id),
-    disabled: !canMove
-  });
-  const setNodeRef = (node: HTMLElement | null) => {
-    setDropNodeRef(node);
-    setSortableNodeRef(node);
-  };
-  const style = {
-    "--tree-depth": depth,
-    "--folder-color": folder.color ?? "var(--accent)",
-    transform: transform ? CSS.Transform.toString(transform) : undefined,
-    transition,
-    opacity: isDragging ? 0.42 : undefined
-  } as CSSProperties;
-
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      className={`resource-tree-item ${selected ? "selected" : ""} ${isOver ? "drop-over" : ""} ${canDrop ? "" : "drop-disabled"} ${canMove ? "folder-draggable" : ""}`}
-      style={style}
-      onClick={onSelect}
-      data-folder-id={folder.id}
-      aria-current={selected ? "page" : undefined}
-      {...(canMove ? attributes : {})}
-      {...(canMove ? listeners : {})}
-    >
-      <span
-        className={`resource-tree-expander ${expanded ? "expanded" : ""} ${hasChildren ? "" : "empty"}`}
-        onClick={onToggle}
-        onPointerDown={(event) => event.stopPropagation()}
-      >
-        {hasChildren ? <ChevronRight size={13} /> : null}
-      </span>
-      <span className="resource-tree-icon">
-        <Icon name={folder.icon ?? "FolderOpen"} size={15} />
-      </span>
-      <span className="resource-tree-name">{folder.name}</span>
-      <em>{count}</em>
-    </button>
-  );
-}
-
-interface SubfolderShortcutButtonProps {
-  folder: ResourceFolder;
-  count: number;
-  canDrop: boolean;
-  onSelect: () => void;
-}
-
-function SubfolderShortcutButton({ folder, count, canDrop, onSelect }: SubfolderShortcutButtonProps) {
-  const { isOver, setNodeRef } = useDroppable({
-    id: folderDropId(folder.id),
-    disabled: !canDrop
-  });
-
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      key={folder.id}
-      className={`subfolder-card ${isOver ? "drop-over" : ""} ${canDrop ? "" : "drop-disabled"}`}
-      style={{ "--folder-color": folder.color ?? "var(--accent)" } as CSSProperties}
-      onClick={onSelect}
-      data-folder-id={folder.id}
-    >
-      <Icon name={folder.icon ?? "FolderOpen"} size={17} />
-      <span>{folder.name}</span>
-      <em>{count} 个资源</em>
-    </button>
-  );
-}
-
 interface SortableResourceRowProps {
   item: OrbitItem;
   selectedIds: string[];
@@ -1393,7 +598,6 @@ interface SortableResourceRowProps {
   toggleSelected: (id: string) => void;
   openItem: (item: OrbitItem) => void;
   groups: OrbitGroup[];
-  folders: ResourceFolder[];
   tripCounts: Record<string, number>;
   showTripsAction: boolean;
   setTripPanelItem: (item: OrbitItem | null) => void;
@@ -1402,7 +606,6 @@ interface SortableResourceRowProps {
   setEditor: (editor: any) => void;
   removeItem: (item: OrbitItem) => void;
   resourceIconStyle: (item: OrbitItem) => React.CSSProperties;
-  openContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
   isOverlay?: boolean;
   isSimple?: boolean;
   densityFactor?: number;
@@ -1416,7 +619,6 @@ function SortableResourceRow({
   toggleSelected,
   openItem,
   groups,
-  folders,
   tripCounts,
   showTripsAction,
   setTripPanelItem,
@@ -1425,7 +627,6 @@ function SortableResourceRow({
   setEditor,
   removeItem,
   resourceIconStyle,
-  openContextMenu,
   isOverlay = false,
   isSimple = false,
   densityFactor = 0
@@ -1448,7 +649,6 @@ function SortableResourceRow({
   };
 
   const iconSize = isSimple ? (densityFactor > 0.5 ? 24 : 32) : 26;
-  const dragAttributesEnabled = !batchMode && !isOverlay;
 
   return (
     <article
@@ -1458,10 +658,8 @@ function SortableResourceRow({
         isDragging ? "placeholder" : isOverlay ? "dragging" : ""
       } ${isSimple ? "simple-mode" : ""}`}
       data-resource-id={item.id}
-      {...(dragAttributesEnabled ? attributes : {})}
-      {...(dragAttributesEnabled ? listeners : {})}
-      onContextMenuCapture={isOverlay ? undefined : openContextMenu}
-      onContextMenu={isOverlay ? undefined : openContextMenu}
+      {...(isOverlay ? {} : attributes)}
+      {...(isOverlay ? {} : listeners)}
       onDragStart={(e: React.DragEvent) => e.preventDefault()}
     >
       {batchMode && !isOverlay && (
@@ -1473,7 +671,6 @@ function SortableResourceRow({
         type="button"
         className="resource-launch"
         onClick={() => (batchMode ? toggleSelected(item.id) : openItem(item))}
-        onContextMenu={openContextMenu}
         disabled={busy}
       >
         <span
@@ -1487,7 +684,7 @@ function SortableResourceRow({
           {!isSimple && <small>{item.subtitle || item.target}</small>}
           {!isSimple && (
             <span className="resource-group-tags" aria-label="资源标签">
-              {groupLabelsForItem(item, groups, folders).map((group) => (
+              {groupLabelsForItem(item, groups).map((group) => (
                 <em key={group.id} data-group-id={group.id}>{group.title}</em>
               ))}
             </span>
@@ -1724,34 +921,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [bubbleOpacityDraft, setBubbleOpacityDraft] = useState<number | null>(null);
   const [logs, setLogs] = useState<PluginLog[]>([]);
   const [activeView, setActiveView] = useState<ViewId>(getInitialView);
-  const [hideResourceNav, setHideResourceNav] = useState<boolean>(() => {
-    return localStorage.getItem("orbitstart.dashboard.hide_resource_nav") === "true";
-  });
-  const [hideWorkbench, setHideWorkbench] = useState<boolean>(() => {
-    return localStorage.getItem("orbitstart.dashboard.hide_workbench") === "true";
-  });
-
-  const resourceMode = settings?.resourceMode === "hierarchical" ? "hierarchical" : "single";
-  const isHierarchicalResourceMode = resourceMode === "hierarchical";
-  const resourceSideCollapsed = hideResourceNav && hideWorkbench;
-
-  const setResourceSideCollapsed = (collapsed: boolean) => {
-    setHideResourceNav(collapsed);
-    setHideWorkbench(collapsed);
-    localStorage.setItem("orbitstart.dashboard.hide_resource_nav", String(collapsed));
-    localStorage.setItem("orbitstart.dashboard.hide_workbench", String(collapsed));
-  };
-
-  const toggleResourceSidePanels = () => {
-    setResourceSideCollapsed(!resourceSideCollapsed);
-  };
-
   const [settingsSection, setSettingsSection] = useState<SettingsSection>(() => sectionFromPanel(auxPanel));
   const [activeGroup, setActiveGroup] = useState("all");
-  const [storedResourceFolders, setStoredResourceFolders] = useState<ResourceFolder[]>(readStoredResourceFolders);
-  const [activeFolderId, setActiveFolderId] = useState("all");
-  const [expandedFolderIds, setExpandedFolderIds] = useState<string[]>(["apps", "web", "academic-sites", "work", "workspaces"]);
-  const [activeTagFilters, setActiveTagFilters] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -1772,7 +943,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchGroup, setBatchGroup] = useState("apps");
-  const [batchFolderId, setBatchFolderId] = useState("apps");
   const [selectedPlugin, setSelectedPlugin] = useState<OrbitPluginManifest | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -1821,98 +991,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const pluginStateReady = plugins.length > 0;
   const pluginEnabled = (id: string) => plugins.some((plugin) => plugin.id === id && plugin.enabled);
   const hotkeyBinderEnabled = pluginEnabled("hotkey-binder");
-  const resourceFolders = useMemo(() => buildResourceFolders(groups, storedResourceFolders), [groups, storedResourceFolders]);
-  const activeFolder = getFolderById(activeFolderId, resourceFolders);
-
-  const selectResourceFolder = (folderId: string) => {
-    const folder = getFolderById(folderId, resourceFolders);
-    const nextId = folder?.id ?? "all";
-    setActiveFolderId(nextId);
-    setActiveGroup(nextId);
-    setActiveTagFilters([]);
-    const ancestors = getFolderPath(nextId, resourceFolders)
-      .map((item) => item.parentId)
-      .filter(Boolean) as string[];
-    if (ancestors.length) {
-      setExpandedFolderIds((current) => Array.from(new Set([...current, ...ancestors])));
-    }
-  };
-
-  const toggleResourceFolderExpanded = (folderId: string) => {
-    setExpandedFolderIds((current) =>
-      current.includes(folderId) ? current.filter((id) => id !== folderId) : [...current, folderId]
-    );
-  };
-
-  const persistResourceFolders = (nextFolders: ResourceFolder[]) => {
-    setStoredResourceFolders(nextFolders);
-    writeStoredResourceFolders(nextFolders);
-  };
-
-  const persistResourceFolderUpdates = (updates: ResourceFolder[]) => {
-    const byId = new Map(storedResourceFolders.map((folder) => [folder.id, folder]));
-    updates.forEach((folder) => {
-      byId.set(folder.id, {
-        ...folder,
-        parentId: folder.parentId ?? null,
-        updatedAt: new Date().toISOString()
-      });
-    });
-    persistResourceFolders(Array.from(byId.values()));
-  };
-
-  function moveFolderBefore(folderId: string, overFolderId: string) {
-    if (!canMoveFolder(folderId)) {
-      setToast("该目录不可移动");
-      return;
-    }
-    const folder = getFolderById(folderId, resourceFolders);
-    const overFolder = getFolderById(overFolderId, resourceFolders);
-    if (!folder || !overFolder) return;
-    const parentId = folder.parentId ?? null;
-    if (parentId !== (overFolder.parentId ?? null)) return;
-    const siblings = getFolderChildren(parentId, resourceFolders);
-    const oldIndex = siblings.findIndex((item) => item.id === folder.id);
-    const newIndex = siblings.findIndex((item) => item.id === overFolder.id);
-    if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return;
-    const ordered = arrayMove(siblings, oldIndex, newIndex);
-    const baseSort = Math.min(...siblings.map((item) => item.sortOrder), parentId ? 1000 : 0);
-    persistResourceFolderUpdates(
-      ordered.map((item, index) => ({
-        ...item,
-        sortOrder: baseSort + index
-      }))
-    );
-    setToast(`已调整目录顺序：${folder.name}`);
-  }
-
-  function moveFolderToParent(folderId: string, parentId: string | null) {
-    const folder = getFolderById(folderId, resourceFolders);
-    if (!folder || !canMoveFolder(folder.id)) {
-      setToast("该目录不可移动");
-      return;
-    }
-    if (parentId && (!canReceiveFolder(parentId, resourceFolders) || parentId === folder.id || isFolderDescendant(folder.id, parentId, resourceFolders))) {
-      setToast("不能把目录移动到自身或其子目录下");
-      return;
-    }
-    const nextParentId = parentId ?? null;
-    if ((folder.parentId ?? null) === nextParentId) return;
-    const siblings = getFolderChildren(nextParentId, resourceFolders).filter((item) => item.id !== folder.id);
-    const nextSortOrder = Math.max(nextParentId ? 1000 : 0, ...siblings.map((item) => item.sortOrder)) + 1;
-    persistResourceFolderUpdates([
-      {
-        ...folder,
-        parentId: nextParentId,
-        sortOrder: nextSortOrder
-      }
-    ]);
-    if (nextParentId) {
-      setExpandedFolderIds((current) => Array.from(new Set([...current, nextParentId])));
-    }
-    const parentName = nextParentId ? getFolderById(nextParentId, resourceFolders)?.name ?? "目标目录" : "资源导航根目录";
-    setToast(`已移动目录「${folder.name}」到「${parentName}」`);
-  }
 
   const fetchGroupHotkeys = async () => {
     try {
@@ -1930,35 +1008,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
       setHotkeysBoundToGroup({});
     }
   }, [hotkeyBinderEnabled]);
-
-  useEffect(() => {
-    if (!getFolderById(activeFolderId, resourceFolders)) {
-      setActiveFolderId("all");
-      setActiveTagFilters([]);
-    }
-  }, [activeFolderId, resourceFolders]);
-
-  useEffect(() => {
-    if (!isHierarchicalResourceMode) {
-      setActiveTagFilters([]);
-      if (!groups.some((group) => group.id === activeGroup)) {
-        setActiveGroup("all");
-      }
-    }
-  }, [activeGroup, groups, isHierarchicalResourceMode]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
-        e.preventDefault();
-        if (isHierarchicalResourceMode) {
-          toggleResourceSidePanels();
-        }
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isHierarchicalResourceMode, resourceSideCollapsed]);
 
   const handleGroupDragStart = (event: DragStartEvent) => {
     setGroupDragActiveId(event.active.id as string);
@@ -2218,52 +1267,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setActiveId(event.active.id as string);
   };
 
-  const folderIdAtPointer = (excludeFolderId?: string | null) => {
-    const elements = document.elementsFromPoint(lastPointerRef.current.x, lastPointerRef.current.y);
-    for (const element of elements) {
-      const folderElement = element.closest("[data-folder-id]");
-      const folderId = folderElement?.getAttribute("data-folder-id") ?? null;
-      if (folderId && folderId !== excludeFolderId) return folderId;
-    }
-    return null;
-  };
-
   const handleDragEnd = (event: DragEndEvent) => {
     setActiveId(null);
     const { active, over } = event;
-    const activeFolderSortId = folderIdFromSortId(String(active.id));
-    if (isHierarchicalResourceMode && activeFolderSortId) {
-      const overId = over ? String(over.id) : "";
-      const overFolderSortId = folderIdFromSortId(overId);
-      const pointerFolderId = folderIdAtPointer(activeFolderSortId);
-      const targetFolderId = pointerFolderId || folderIdFromDropId(overId) || overFolderSortId;
-      if (!targetFolderId || targetFolderId === activeFolderSortId) return;
-
-      const activeFolder = getFolderById(activeFolderSortId, resourceFolders);
-      const overFolder = overFolderSortId ? getFolderById(overFolderSortId, resourceFolders) : null;
-      if (!pointerFolderId && activeFolder && overFolder && (activeFolder.parentId ?? null) === (overFolder.parentId ?? null)) {
-        moveFolderBefore(activeFolder.id, overFolder.id);
-        return;
-      }
-
-      moveFolderToParent(activeFolderSortId, targetFolderId === "all" ? null : targetFolderId);
-      return;
-    }
-
-    const pointerFolderId = isHierarchicalResourceMode ? folderIdAtPointer(null) : null;
-    const targetFolderId = pointerFolderId && isAssignableFolder(pointerFolderId, resourceFolders)
-      ? pointerFolderId
-      : over
-      ? folderIdFromDropId(String(over.id))
-      : null;
-    if (targetFolderId) {
-      const item = itemById.get(String(active.id));
-      if (item) {
-        void moveResourceToFolder(item, targetFolderId);
-      }
-      return;
-    }
-
     if (!over || active.id === over.id) return;
 
     setLocalOrder((prev) => {
@@ -2491,18 +1497,18 @@ export function MainApp({ windowLabel }: MainAppProps) {
         const action = event.payload;
         if (action === "search") {
           setActiveView("dashboard");
-          selectResourceFolder("all");
+          setActiveGroup("all");
           setQuery("");
           requestAnimationFrame(() => searchInputRef.current?.focus());
         } else if (action === "add-resource") {
           setActiveView("dashboard");
-          openCreateResource();
+          setEditor({ mode: "create", input: makeEmptyInput() });
         } else if (action === "workspace") {
           setActiveView("dashboard");
-          selectResourceFolder("all");
+          setActiveGroup("all");
         } else if (action === "recent") {
           setActiveView("dashboard");
-          selectResourceFolder("recent");
+          setActiveGroup("all");
           setQuery("");
         } else if (action === "settings") {
           void openPanelWindow("settings");
@@ -2563,14 +1569,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
       },
       refreshResources: reload,
       toggleSafeMode,
-      focusGroup: (groupId) => {
-        setActiveGroup(groupId);
-        if (getFolderById(groupId, resourceFolders)) {
-          selectResourceFolder(groupId);
-        }
-      }
+      focusGroup: (groupId) => setActiveGroup(groupId)
     });
-  }, [settings?.safeMode, resourceFolders]);
+  }, [settings?.safeMode]);
 
   useEffect(() => {
     if (paletteOpen) {
@@ -2602,32 +1603,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
       window.removeEventListener("scroll", closeMenu, true);
     };
   }, [contextMenu]);
-
-  useEffect(() => {
-    const openNativeContextMenu = (event: globalThis.MouseEvent) => {
-      if (!(event.target instanceof Element)) return;
-      if (!event.target.closest(".app-shell")) return;
-      if (event.target.closest(".context-menu")) return;
-      event.preventDefault();
-      event.stopPropagation();
-      setActiveId(null);
-      const fallbackPoint = lastPointerRef.current;
-      const clientX =
-        Number.isFinite(event.clientX) && event.clientX > 0 && event.clientX <= window.innerWidth
-          ? event.clientX
-          : fallbackPoint.x;
-      const clientY =
-        Number.isFinite(event.clientY) && event.clientY > 0 && event.clientY <= window.innerHeight
-          ? event.clientY
-          : fallbackPoint.y;
-      const nextMenu = contextMenuFromEvent({ clientX, clientY, target: event.target });
-      contextEditTargetRef.current = nextMenu.kind === "edit" ? editableElementFrom(event.target) : null;
-      setContextMenu(nextMenu);
-    };
-
-    window.addEventListener("contextmenu", openNativeContextMenu, { capture: true });
-    return () => window.removeEventListener("contextmenu", openNativeContextMenu, { capture: true });
-  }, []);
 
   useLayoutEffect(() => {
     if (!contextMenu || !contextMenuRef.current) return;
@@ -2828,8 +1803,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
       .filter((item): item is OrbitItem => !!item);
 
     const activeGroupObj = groups.find((g) => g.id === activeGroup);
-    const activeFolderObj = getFolderById(activeGroup, resourceFolders);
-    const groupTitle = activeGroupObj?.title ?? activeFolderObj?.name ?? "自定义";
+    const groupTitle = activeGroupObj ? activeGroupObj.title : "自定义";
     const newWsId = "ws_" + Math.random().toString(36).substr(2, 9);
     
     const newWs = {
@@ -2908,39 +1882,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
     return true;
   });
 
-  const folderCounts = useMemo(() => {
-    const countableItems = items.filter(itemKindAllowed);
-    const counts = new Map<string, number>();
-    resourceFolders.forEach((folder) => {
-      counts.set(folder.id, countableItems.filter((item) => itemMatchesFolder(item, folder.id, resourceFolders)).length);
-    });
-    return counts;
-  }, [items, plugins, resourceFolders]);
-
-  const folderScopedItems = useMemo(() => {
-    return items
-      .filter(itemKindAllowed)
-      .filter((item) => itemMatchesFolder(item, activeFolderId, resourceFolders));
-  }, [activeFolderId, items, plugins, resourceFolders]);
-
-  const groupScopedItems = useMemo(() => {
-    return items
-      .filter(itemKindAllowed)
-      .filter((item) => activeGroup === "all" || itemHasGroup(item, activeGroup));
-  }, [activeGroup, items, plugins]);
-
-  const resourceScopedItems = isHierarchicalResourceMode ? folderScopedItems : groupScopedItems;
-
-  const searchedFolderItems = useMemo(() => {
-    return resourceScopedItems.filter((item) => matchesItem(item, query));
-  }, [resourceScopedItems, query]);
-
-  const tagStats = useMemo(() => buildTagStats(searchedFolderItems, groups), [searchedFolderItems, groups]);
-
   const filteredItems = useMemo(() => {
-    const matched = searchedFolderItems.filter((item) =>
-      activeTagFilters.every((tag) => tagMatchesItem(item, tag, groups))
-    );
+    const matched = items
+      .filter(itemKindAllowed)
+      .filter((item) => {
+        if (activeGroup === "all") return true;
+        return itemHasGroup(item, activeGroup);
+      })
+      .filter((item) => matchesItem(item, query));
 
     const q = query.trim().toLowerCase();
     if (!q) {
@@ -2967,18 +1916,10 @@ export function MainApp({ windowLabel }: MainAppProps) {
       if (aLaunch !== bLaunch) return bLaunch - aLaunch;
       return a.title.localeCompare(b.title, "zh-Hans-CN");
     });
-  }, [activeTagFilters, searchedFolderItems, query, localOrder, groups]);
+  }, [activeGroup, items, plugins, query, localOrder]);
 
   const favoriteItems = filteredItems.filter((item) => item.favorite);
-  const currentFolderChildren = isHierarchicalResourceMode ? getFolderChildren(activeFolderId, resourceFolders) : [];
-  const currentFolderPath = activeFolder ? getFolderPath(activeFolder.id, resourceFolders) : [];
-  const currentFolderTags = tagStats.slice(0, 14);
-  const activeSingleGroup = groups.find((group) => group.id === activeGroup) ?? groups.find((group) => group.id === "all");
-  const activeSingleTitle = activeSingleGroup?.title ?? "全部资源";
-  const activeSingleDescription = activeSingleGroup?.description || "使用单级标签管理资源，适合偏好旧版扁平分类的工作流。";
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
-  const activeDraggedFolderId = activeId ? folderIdFromSortId(activeId) : null;
-  const activeDraggedFolder = activeDraggedFolderId ? getFolderById(activeDraggedFolderId, resourceFolders) : null;
   const itemByTarget = useMemo(() => new Map(items.map((item) => [item.target, item])), [items]);
   const enabledPlugins = plugins.filter((plugin) => plugin.enabled).length;
   const densityValue = useMemo(() => {
@@ -2992,7 +1933,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const densityFactor = densityValue / 100;
   const isSimple = (settings?.displayMode ?? "simple") === "simple";
   const density = densityValue > 50 ? "compact" : "comfortable";
-  const showResourceSidePanels = isHierarchicalResourceMode && !resourceSideCollapsed;
 
   const isLocalGalaxyTheme = activeTheme?.id === "local-galaxy";
   const themeLabel = activeTheme?.name ? activeTheme.name.toUpperCase() : "ORBITSTART";
@@ -3046,188 +1986,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   function inputWithKind(input: OrbitItemInput, kind: ItemKind): OrbitItemInput {
     const option = baseKindOptions.find((candidate) => candidate.value === kind) ?? baseKindOptions[0];
-    if (!isHierarchicalResourceMode) {
-      return {
-        ...input,
-        kind,
-        group: normalizeGroupValue(input.group || option.group, option.group),
-        icon: option.icon,
-        accent: option.accent
-      };
-    }
-    const currentFolderId = primaryFolderIdFromGroup(input.group, input.kind, resourceFolders);
-    const folderId = isAssignableFolder(currentFolderId, resourceFolders) ? currentFolderId : defaultFolderForKind(kind);
     return {
       ...input,
       kind,
-      group: setPrimaryFolderInGroup(input.group || option.group, folderId, kind, resourceFolders),
+      group: normalizeGroupValue(mergeGroupValues(option.group, input.group), option.group),
       icon: option.icon,
       accent: option.accent
     };
-  }
-
-  function openCreateResource(kind: ItemKind = "app", folderId = activeFolderId) {
-    const input = makeEmptyInput(kind);
-    if (!isHierarchicalResourceMode) {
-      const groupId = activeGroup !== "all" && groups.some((group) => group.id === activeGroup)
-        ? activeGroup
-        : input.group;
-      setEditor({
-        mode: "create",
-        input: {
-          ...input,
-          group: normalizeGroupValue(groupId, input.group)
-        }
-      });
-      return;
-    }
-    const targetFolderId = isAssignableFolder(folderId, resourceFolders) ? folderId : defaultFolderForKind(kind);
-    setEditor({
-      mode: "create",
-      input: {
-        ...input,
-        group: setPrimaryFolderInGroup(input.group, targetFolderId, input.kind, resourceFolders)
-      }
-    });
-  }
-
-  function openCreateSubfolder(parentId: string | null = activeFolderId) {
-    const safeParentId = parentId && isAssignableFolder(parentId, resourceFolders) ? parentId : null;
-    setDialog({
-      type: "folder",
-      parentId: safeParentId,
-      name: "",
-      icon: "FolderOpen",
-      color: activeFolder?.color ?? "#27d7c6"
-    });
-  }
-
-  function confirmCreateSubfolder(folderDialog: Extract<AppDialogState, { type: "folder" }>) {
-    const name = folderDialog.name.trim();
-    if (!name) {
-      setToast("目录名称不能为空");
-      return;
-    }
-    const now = new Date().toISOString();
-    const siblingCount = getFolderChildren(folderDialog.parentId ?? null, resourceFolders).length;
-    const folder: ResourceFolder = {
-      id: createFolderId(name),
-      name,
-      parentId: folderDialog.parentId ?? null,
-      kind: "custom",
-      icon: folderDialog.icon || "FolderOpen",
-      color: folderDialog.color || "#27d7c6",
-      description: "",
-      sortOrder: 1000 + siblingCount,
-      createdAt: now,
-      updatedAt: now,
-      source: "user"
-    };
-    persistResourceFolders([...storedResourceFolders, folder]);
-    if (folder.parentId) {
-      setExpandedFolderIds((current) => Array.from(new Set([...current, folder.parentId as string])));
-    }
-    setActiveFolderId(folder.id);
-    setActiveGroup(folder.id);
-    setActiveTagFilters([]);
-    setDialog(null);
-    setToast(`已新建子目录：${name}`);
-  }
-
-  function openRenameFolderDialog(folderId: string) {
-    const folder = getFolderById(folderId, resourceFolders);
-    if (!folder || folder.source !== "user") {
-      setToast("系统目录暂不支持重命名");
-      return;
-    }
-    setDialog({
-      type: "rename-folder",
-      folderId: folder.id,
-      name: folder.name,
-      icon: folder.icon ?? "FolderOpen",
-      color: folder.color ?? "#27d7c6"
-    });
-  }
-
-  function confirmRenameFolder(folderDialog: Extract<AppDialogState, { type: "rename-folder" }>) {
-    const name = folderDialog.name.trim();
-    if (!name) {
-      setToast("目录名称不能为空");
-      return;
-    }
-    const nextFolders = storedResourceFolders.map((folder) =>
-      folder.id === folderDialog.folderId
-        ? {
-            ...folder,
-            name,
-            icon: folderDialog.icon || "FolderOpen",
-            color: folderDialog.color || "#27d7c6",
-            updatedAt: new Date().toISOString()
-          }
-        : folder
-    );
-    persistResourceFolders(nextFolders);
-    setDialog(null);
-    setToast(`已重命名目录：${name}`);
-  }
-
-  function deleteCustomFolder(folderId: string) {
-    const folder = getFolderById(folderId, resourceFolders);
-    if (!folder || folder.source !== "user") {
-      setToast("系统目录不可删除");
-      return;
-    }
-    const childCount = getFolderChildren(folderId, resourceFolders).length;
-    const itemCount = items.filter((item) => primaryFolderIdForItem(item, resourceFolders) === folderId).length;
-    if (childCount > 0 || itemCount > 0) {
-      setToast(`目录「${folder.name}」不是空目录，暂不能删除`);
-      return;
-    }
-    persistResourceFolders(storedResourceFolders.filter((item) => item.id !== folderId));
-    if (activeFolderId === folderId) {
-      selectResourceFolder(folder.parentId ?? "all");
-    }
-    setContextMenu(null);
-    setToast(`已删除目录：${folder.name}`);
-  }
-
-  async function moveResourceToFolder(item: OrbitItem, folderId: string) {
-    const folder = getFolderById(folderId, resourceFolders);
-    if (!folder || !isAssignableFolder(folder.id, resourceFolders)) {
-      setToast("请选择可放入资源的目录");
-      return;
-    }
-    const currentFolderId = primaryFolderIdForItem(item, resourceFolders);
-    if (currentFolderId === folder.id) {
-      setToast(`资源已在「${folder.name}」中`);
-      setContextMenu(null);
-      return;
-    }
-    setContextMenu(null);
-    setBusy(true);
-    try {
-      await updateItem({
-        ...item,
-        group: setPrimaryFolderInGroup(item.group, folder.id, item.kind, resourceFolders)
-      });
-      await reload();
-      setToast(`已移动「${item.title}」到「${folder.name}」`);
-    } catch (error) {
-      setToast(`移动资源失败：${String(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function toggleTagFilter(tag: string) {
-    setActiveTagFilters((current) =>
-      current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
-    );
-  }
-
-  function folderPathLabel(folderId: string) {
-    const path = getFolderPath(folderId, resourceFolders);
-    return ["资源中心", ...path.map((folder) => folder.name)].join(" / ");
   }
 
   async function openItem(item: OrbitItem) {
@@ -3470,12 +2235,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
     setDialog({ type: "batch-move", groupId: batchGroup });
   }
 
-  async function batchMoveSelectedToFolder() {
-    if (selectedIds.length === 0) return;
-    const fallbackFolderId = isAssignableFolder(activeFolderId, resourceFolders) ? activeFolderId : batchFolderId;
-    setDialog({ type: "batch-folder-move", folderId: isAssignableFolder(fallbackFolderId, resourceFolders) ? fallbackFolderId : "apps" });
-  }
-
   async function confirmBatchMoveSelected(groupId: string) {
     if (selectedIds.length === 0) return;
     setBusy(true);
@@ -3492,73 +2251,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
       setToast(`已添加标签：${group?.title ?? groupId}`);
     } catch (error) {
       setToast(`批量移动失败：${String(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function confirmBatchMoveSelectedToFolder(folderId: string) {
-    if (selectedIds.length === 0) return;
-    const folder = getFolderById(folderId, resourceFolders);
-    if (!folder || !isAssignableFolder(folder.id, resourceFolders)) {
-      setToast("请选择可放入资源的目录");
-      return;
-    }
-    setBusy(true);
-    try {
-      const selected = items.filter((item) => selectedIds.includes(item.id));
-      for (const item of selected) {
-        await updateItem({
-          ...item,
-          group: setPrimaryFolderInGroup(item.group, folder.id, item.kind, resourceFolders)
-        });
-      }
-      setBatchFolderId(folder.id);
-      exitBatchMode();
-      setDialog(null);
-      await reload();
-      setToast(`已移动 ${selected.length} 个资源到「${folder.name}」`);
-    } catch (error) {
-      setToast(`批量移动目录失败：${String(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function batchRemoveGroup(groupId: string) {
-    if (selectedIds.length === 0) return;
-    setBusy(true);
-    try {
-      const selected = items.filter((item) => selectedIds.includes(item.id));
-      for (const item of selected) {
-        const remainingGroups = splitGroupIds(item.group).filter((g) => g !== groupId);
-        await updateItem({ ...item, group: normalizeGroupValue(joinGroupIds(remainingGroups), "uncategorized") });
-      }
-      exitBatchMode();
-      await reload();
-      const group = groups.find((candidate) => candidate.id === groupId);
-      setToast(`已去除标签：${group?.title ?? groupId}`);
-    } catch (error) {
-      setToast(`批量去除标签失败：${String(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function batchRemoveTag(tag: string) {
-    if (selectedIds.length === 0) return;
-    setBusy(true);
-    try {
-      const selected = items.filter((item) => selectedIds.includes(item.id));
-      for (const item of selected) {
-        const remainingTags = (item.tags || []).filter((t) => t.toLowerCase() !== tag.toLowerCase());
-        await updateItem({ ...item, tags: remainingTags });
-      }
-      exitBatchMode();
-      await reload();
-      setToast(`已去除标签：${tag}`);
-    } catch (error) {
-      setToast(`批量去除标签失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -3714,8 +2406,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
       const snapshot = await setPluginEnabled(plugin.id, !plugin.enabled);
       applySnapshot(snapshot);
       setToast(`${plugin.name} 已${plugin.enabled ? "停用" : "启用"}`);
-      if (plugin.id === "core-websites" && plugin.enabled && activeFolderId === "web") {
-        selectResourceFolder("all");
+      if (plugin.id === "core-websites" && plugin.enabled && activeGroup === "web") {
+        setActiveGroup("all");
       }
     } catch (error) {
       setToast(`插件状态更新失败：${String(error)}`);
@@ -3786,27 +2478,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
       setToast(`显示模式已应用：${mode === "simple" ? "简约模式" : "详细模式"}`);
     } catch (error) {
       setToast(`显示模式切换失败：${String(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function changeResourceMode(mode: "hierarchical" | "single") {
-    setBusy(true);
-    try {
-      const snapshot = await setResourceMode(mode);
-      applySnapshot(snapshot);
-      setActiveTagFilters([]);
-      if (mode === "hierarchical") {
-        setResourceSideCollapsed(false);
-        selectResourceFolder(activeFolderId);
-      } else {
-        setResourceSideCollapsed(true);
-        setActiveGroup("all");
-      }
-      setToast(mode === "hierarchical" ? "资源模式已切换为分级资源模式" : "资源模式已切换为单级资源模式");
-    } catch (error) {
-      setToast(`资源模式切换失败：${String(error)}`);
     } finally {
       setBusy(false);
     }
@@ -3929,11 +2600,11 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   async function handleCommand(command: OrbitCommand) {
     if (command.id === "core.addItem") {
-      openCreateResource();
+      setEditor({ mode: "create", input: makeEmptyInput() });
       return;
     }
     if (command.id === "core.addActionChain") {
-      openCreateResource("action_chain");
+      setEditor({ mode: "create", input: makeEmptyInput("action_chain") });
       return;
     }
     if (command.id === "core.scanShortcuts") {
@@ -4036,12 +2707,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
         typeLabel: "分组",
         _score: score,
         run: () => {
+          setActiveGroup(g.id);
           setActiveView("dashboard");
-          if (getFolderById(g.id, resourceFolders)) {
-            selectResourceFolder(g.id);
-          } else {
-            setActiveGroup(g.id);
-          }
         }
       };
     });
@@ -4112,7 +2779,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
     setCommandBarSelectedIndex((prev) => Math.min(prev, Math.max(0, merged.length - 1)));
     return merged.slice(0, 16);
-  }, [items, groups, commandBarQuery, obsidianFeatureEnabled, resourceFolders]);
+  }, [items, groups, commandBarQuery, obsidianFeatureEnabled]);
 
   const handleCommandBarKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     const total = commandBarResults.length;
@@ -4248,7 +2915,8 @@ export function MainApp({ windowLabel }: MainAppProps) {
 
   function handleAppContextMenu(event: ReactMouseEvent<HTMLElement>) {
     if (activeId) {
-      setActiveId(null);
+      event.preventDefault();
+      return;
     }
     event.preventDefault();
     event.stopPropagation();
@@ -4301,7 +2969,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
   async function runBlankContextAction(action: "add" | "scan" | "bookmarks" | "refresh" | "settings") {
     setContextMenu(null);
     if (action === "add") {
-      openCreateResource();
+      setEditor({ mode: "create", input: makeEmptyInput() });
       return;
     }
     if (action === "scan") {
@@ -4497,367 +3165,95 @@ export function MainApp({ windowLabel }: MainAppProps) {
     }
   }
 
-  function renderResourceTreeNodes(parentId: string | null, depth = 0): ReactNode {
-    const children = getFolderChildren(parentId, resourceFolders);
-    return (
-      <SortableContext items={children.map((folder) => folderSortId(folder.id))} strategy={verticalListSortingStrategy}>
-        {children.map((folder) => {
-          const nestedChildren = getFolderChildren(folder.id, resourceFolders);
-          const expanded = expandedFolderIds.includes(folder.id);
-          const selected = activeFolderId === folder.id;
-          const canDrop = isAssignableFolder(folder.id, resourceFolders);
-          return (
-            <div className="resource-tree-node" key={folder.id}>
-              <ResourceTreeItemButton
-                folder={folder}
-                depth={depth}
-                selected={selected}
-                expanded={expanded}
-                hasChildren={nestedChildren.length > 0}
-                count={folderCounts.get(folder.id) ?? 0}
-                canDrop={canDrop}
-                canMove={canMoveFolder(folder.id)}
-                canReceiveFolderMove={canReceiveFolder(folder.id, resourceFolders)}
-                onSelect={() => selectResourceFolder(folder.id)}
-                onToggle={(event) => {
-                  if (!nestedChildren.length) return;
-                  event.stopPropagation();
-                  toggleResourceFolderExpanded(folder.id);
-                }}
-              />
-              {nestedChildren.length > 0 && expanded && (
-                <div className="resource-tree-children">
-                  {renderResourceTreeNodes(folder.id, depth + 1)}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </SortableContext>
-    );
-  }
-
-  function renderFolderOptions() {
-    return resourceFolders
-      .filter((folder) => isAssignableFolder(folder.id, resourceFolders))
-      .map((folder) => {
-        const depth = Math.max(0, getFolderPath(folder.id, resourceFolders).length - 1);
-        return (
-          <option key={folder.id} value={folder.id}>
-            {`${"· ".repeat(depth)}${folder.name}`}
-          </option>
-        );
-      });
-  }
-
   const renderDashboard = () => (
-    <section className="page-layout dashboard-page resource-center-page">
-      <DndContext
-        sensors={batchMode ? [] : sensors}
-        collisionDetection={resourceFolderCollisionDetection}
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
-        onDragCancel={handleDragCancel}
-      >
-        <section className={`resource-manager-shell ${showResourceSidePanels ? "" : "side-collapsed"}`}>
-          {showResourceSidePanels && (
-          <aside className="resource-left-column" aria-label="资源侧栏">
-            <section className="surface-panel resource-tree-sidebar" aria-label="资源目录树">
-              <div className="resource-tree-head">
-                <div>
-                  <p className="eyebrow">Resource Nav</p>
-                  <h2>资源导航</h2>
-                </div>
-                <div className="resource-panel-actions">
-                  <button
-                    type="button"
-                    className="icon-action"
-                    title="新建根目录"
-                    onClick={() => openCreateSubfolder(null)}
-                    disabled={busy}
-                  >
-                    <PlusCircle size={16} />
-                  </button>
-                </div>
-              </div>
-              <div className="resource-tree-list">
-                {renderResourceTreeNodes(null)}
-              </div>
-            </section>
+    <section className="page-layout dashboard-page">
+      <section className="kpi-grid" aria-label="工作台概览">
+        <article className="kpi-card">
+          <span>资源总数</span>
+          <strong>{items.length}</strong>
+          <em>本地入口与链接</em>
+        </article>
+        <article className="kpi-card">
+          <span>启用插件</span>
+          <strong>{enabledPlugins}</strong>
+          <em>{plugins.length} 个可用模块</em>
+        </article>
+        <article className="kpi-card">
+          <span>主题方案</span>
+          <strong>{themes.length}</strong>
+          <em>{activeTheme?.name ?? "默认主题"}</em>
+        </article>
+        <article className="kpi-card">
+          <span>安全模式</span>
+          <strong>{settings?.safeMode ? "启用" : "关闭"}</strong>
+          <em>第三方扩展控制</em>
+        </article>
+      </section>
 
-            <section className="surface-panel operations-panel resource-detail-panel">
-              <div className="resource-workbench-head">
-                <div>
-                  <p className="eyebrow">Workbench</p>
-                  <h2>工作台</h2>
-                </div>
-              </div>
-              <>
-                <section className="operation-group">
-                  <div className="section-head slim">
-                    <h2>快速操作</h2>
-                  </div>
-                  <button className="wide-command" onClick={() => openCreateSubfolder(activeFolderId)} disabled={busy}>
-                    <FolderOpen size={17} />
-                    <span>添加子文件夹</span>
-                  </button>
-                  <button className="wide-command" onClick={() => void copyToast(folderPathLabel(activeFolderId))}>
-                    <Copy size={17} />
-                    <span>复制目录路径</span>
-                  </button>
-                  <button className="wide-command" onClick={runExport} disabled={busy}>
-                    <Download size={17} />
-                    <span>导出数据备份</span>
-                  </button>
-                  <button className="wide-command" onClick={() => setToast("文件夹分享接口已预留，后续版本接入。")}>
-                    <ExternalLink size={17} />
-                    <span>分享此文件夹</span>
-                  </button>
-                </section>
+      <section className="group-tabs" aria-label="资源分组">
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleGroupDragStart}
+          onDragEnd={handleGroupDragEnd}
+          onDragCancel={handleGroupDragCancel}
+          modifiers={[restrictToHorizontalAxis]}
+        >
+          <SortableContext items={visibleGroups.map((g) => g.id)} strategy={horizontalListSortingStrategy}>
+            {visibleGroups.map((group) => (
+              <SortableGroupTab
+                key={group.id}
+                group={group}
+                activeGroup={activeGroup}
+                setActiveGroup={setActiveGroup}
+                hotkey={hotkeysBoundToGroup[group.id]}
+                hotkeyBinderEnabled={hotkeyBinderEnabled}
+              />
+            ))}
+          </SortableContext>
+        </DndContext>
+        <button className="add-group-tab" onClick={addCustomGroup} disabled={busy}>
+          <PlusCircle size={16} />
+          <span>新分组</span>
+        </button>
+      </section>
 
-                {workspacesFeatureEnabled && dashboardWorkspaces.length > 0 && (
-                  <section className="operation-group workspaces-operation-group">
-                    <div className="section-head slim">
-                      <h2>快捷工作区</h2>
-                    </div>
-                    <div className="dashboard-workspaces-list">
-                      {dashboardWorkspaces.slice(0, 4).map((ws) => (
-                        <div key={ws.id} className="dashboard-workspace-item">
-                          <div
-                            className="dashboard-ws-icon"
-                            style={{
-                              backgroundColor: `${ws.color}15`,
-                              color: ws.color,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center"
-                            }}
-                          >
-                            {getWorkspaceIcon(ws.icon || "Briefcase", ws.color, 16)}
-                          </div>
-                          <div className="dashboard-ws-info">
-                            <strong>{ws.name}</strong>
-                            <span>已启动 {ws.launchCount || 0} 次</span>
-                          </div>
-                          <button
-                            type="button"
-                            className="dashboard-ws-run-btn"
-                            onClick={() => launchWorkspaceFromDashboard(ws.id)}
-                            title="启动此工作区"
-                          >
-                            <Play size={12} fill="currentColor" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                <section className="toast-line">
-                  <CheckCircle2 size={18} />
-                  <span>{toast}</span>
-                </section>
-              </>
-            </section>
-          </aside>
-          )}
-
-        <section className="surface-panel resource-panel resource-directory-panel">
-          {isHierarchicalResourceMode ? (
-            <nav className="resource-breadcrumb" aria-label="资源路径">
-              <button type="button" onClick={() => selectResourceFolder("all")}>资源中心</button>
-              {currentFolderPath.map((folder, index) => (
-                <button
-                  key={folder.id}
-                  type="button"
-                  className={index === currentFolderPath.length - 1 ? "current" : ""}
-                  onClick={() => selectResourceFolder(folder.id)}
-                >
-                  {folder.name}
-                </button>
-              ))}
-            </nav>
-          ) : (
-            <section className="group-tabs resource-single-tabs" aria-label="资源标签">
-              {visibleGroups.map((group) => (
-                <button
-                  key={group.id}
-                  type="button"
-                  className={activeGroup === group.id ? "selected" : ""}
-                  onClick={() => {
-                    setActiveGroup(group.id);
-                    setActiveTagFilters([]);
-                  }}
-                >
-                  <Icon name={group.icon} size={15} />
-                  <span>{group.title}</span>
-                </button>
-              ))}
-              <button type="button" className="group-tab-add" onClick={addCustomGroup}>
-                <PlusCircle size={15} />
-                <span>新建标签</span>
-              </button>
-            </section>
-          )}
-
-          <div className="resource-folder-header">
-            <div>
-              <p className="eyebrow">
-                {isHierarchicalResourceMode ? folderKindLabels[activeFolder?.kind ?? "custom"] ?? "资源目录" : "单级标签"}
-              </p>
-              <h2>{isHierarchicalResourceMode ? activeFolder?.name ?? "全部资源" : activeSingleTitle}</h2>
-              {isHierarchicalResourceMode
-                ? activeFolder?.description && <span>{activeFolder.description}</span>
-                : <span>{activeSingleDescription}</span>}
-            </div>
-            <div className="resource-folder-actions">
-              {isHierarchicalResourceMode && (
-                <button type="button" className="secondary-action compact-action" onClick={() => openCreateSubfolder(activeFolderId)} disabled={busy}>
-                  <FolderOpen size={15} />
-                  新建子目录
-                </button>
-              )}
-              <button type="button" className="primary-action" onClick={() => openCreateResource()} disabled={busy}>
-                <PlusCircle size={18} />
-                添加资源
-              </button>
-            </div>
-          </div>
-
-          <div className="resource-folder-search search-shell">
-            <Search size={19} />
-            <input
-              ref={searchInputRef}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={`搜索 ${isHierarchicalResourceMode ? activeFolder?.name ?? "当前目录" : activeSingleTitle} 中的资源...`}
-            />
-            <kbd>Ctrl K</kbd>
-          </div>
-
-          {currentFolderChildren.length > 0 && (
-            <section className="subfolder-section">
-              <div className="section-head slim">
-                <h2>当前子文件夹</h2>
-              </div>
-              <div className="subfolder-row">
-                {currentFolderChildren.map((folder) => (
-                  <SubfolderShortcutButton
-                    key={folder.id}
-                    folder={folder}
-                    count={folderCounts.get(folder.id) ?? 0}
-                    canDrop={isAssignableFolder(folder.id, resourceFolders)}
-                    onSelect={() => selectResourceFolder(folder.id)}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {isHierarchicalResourceMode && (
-          <section className="tag-filter-section">
-            <div className="section-head slim">
-              <h2>标签筛选</h2>
-            </div>
-            <div className="tag-filter-row">
-              {currentFolderTags.length > 0 ? (
-                currentFolderTags.map((tag) => (
-                  <button
-                    type="button"
-                    key={tag.name}
-                    className={`tag-filter-pill ${activeTagFilters.includes(tag.name) ? "selected" : ""}`}
-                    onClick={() => toggleTagFilter(tag.name)}
-                  >
-                    <span>{tag.name}</span>
-                    <em>{tag.count}</em>
-                  </button>
-                ))
-              ) : (
-                <span className="tag-filter-empty">暂无可筛选标签</span>
-              )}
-              {activeTagFilters.length > 0 && (
-                <button type="button" className="tag-filter-clear" onClick={() => setActiveTagFilters([])}>
-                  清除筛选
-                </button>
-              )}
-            </div>
-          </section>
-          )}
-
-          <div className="section-head resource-grid-head">
+      <section className="dashboard-grid">
+        <section className="surface-panel resource-panel">
+          <div className="section-head">
             <div>
               <p className="eyebrow">Resources</p>
-              <h2>{isHierarchicalResourceMode ? activeFolder?.name ?? "全部资源" : activeSingleTitle} · {filteredItems.length} 个资源</h2>
+              <h2>{filteredItems.length} 个资源</h2>
             </div>
             <div className="section-actions">
-              <span>{favoriteItems.length} 个星标 · {resourceScopedItems.length} 个资源条目</span>
+              <span>{favoriteItems.length} 个星标 · {items.length} 个总条目</span>
               <button type="button" className="secondary-action compact-action" onClick={() => (batchMode ? exitBatchMode() : setBatchMode(true))}>
                 {batchMode ? "退出批量" : "批量管理"}
               </button>
             </div>
           </div>
 
-          {batchMode && (() => {
-            const selectedItems = items.filter((item) => selectedIds.includes(item.id));
-            const commonGroups = selectedItems.length > 0
-              ? selectedItems.reduce<string[]>((acc, item) => {
-                  const itemGroups = splitGroupIds(item.group);
-                  return acc.filter((g) => itemGroups.includes(g));
-                }, splitGroupIds(selectedItems[0].group))
-              : [];
-            const commonTags = selectedItems.length > 0
-              ? selectedItems.reduce<string[]>((acc, item) => {
-                  const itemTags = item.tags || [];
-                  return acc.filter((t) => itemTags.some((it) => it.toLowerCase() === t.toLowerCase()));
-                }, selectedItems[0].tags || [])
-              : [];
-
-            return (
-              <div className="batch-toolbar" style={{ flexWrap: "wrap", rowGap: "8px" }}>
-                <strong>已选 {selectedIds.length} 个</strong>
-                <button type="button" onClick={() => setSelectedIds(filteredItems.map((item) => item.id))}>全选当前</button>
-                <button type="button" onClick={() => setSelectedIds([])}>清空</button>
-                {workspacesFeatureEnabled && (
-                  <button type="button" onClick={createWorkspaceFromActiveGroup} disabled={busy || selectedIds.length === 0}>创建为工作区</button>
-                )}
-                {isHierarchicalResourceMode && (
-                  <button type="button" onClick={batchMoveSelectedToFolder} disabled={busy || selectedIds.length === 0}>移动到目录</button>
-                )}
-                <button type="button" onClick={batchMoveSelected} disabled={busy || selectedIds.length === 0}>加标签</button>
-                {commonGroups.map((groupId) => {
-                  if (groupId === "all" || groupId === "uncategorized") return null;
-                  const group = groups.find((g) => g.id === groupId);
-                  return (
-                    <button
-                      key={`remove-group-${groupId}`}
-                      type="button"
-                      className="warning-action"
-                      onClick={() => void batchRemoveGroup(groupId)}
-                      disabled={busy}
-                      title={`批量从所选资源中移除标签 "${group?.title ?? groupId}"`}
-                    >
-                      去除标签: {group?.title ?? groupId}
-                    </button>
-                  );
-                })}
-                {commonTags.map((tag) => (
-                  <button
-                    key={`remove-tag-${tag}`}
-                    type="button"
-                    className="warning-action"
-                    onClick={() => void batchRemoveTag(tag)}
-                    disabled={busy}
-                    title={`批量从所选资源中移除自定义标签 "${tag}"`}
-                  >
-                    去除标签: {tag}
-                  </button>
-                ))}
-                <button type="button" className="danger-action" onClick={batchDeleteSelected} disabled={busy || selectedIds.length === 0}>删除</button>
-              </div>
-            );
-          })()}
+          {batchMode && (
+            <div className="batch-toolbar">
+              <strong>已选 {selectedIds.length} 个</strong>
+              <button type="button" onClick={() => setSelectedIds(filteredItems.map((item) => item.id))}>全选当前</button>
+              <button type="button" onClick={() => setSelectedIds([])}>清空</button>
+              {workspacesFeatureEnabled && (
+                <button type="button" onClick={createWorkspaceFromActiveGroup} disabled={busy || selectedIds.length === 0}>创建为工作区</button>
+              )}
+              <button type="button" onClick={batchMoveSelected} disabled={busy || selectedIds.length === 0}>加标签</button>
+              <button type="button" className="danger-action" onClick={batchDeleteSelected} disabled={busy || selectedIds.length === 0}>删除</button>
+            </div>
+          )}
 
           <div className={`resource-list display-${settings?.displayMode ?? "simple"}`}>
+            <DndContext
+              sensors={batchMode ? [] : sensors}
+              collisionDetection={closestCenter}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
+            >
               <SortableContext items={localOrder} strategy={rectSortingStrategy}>
                 {filteredItems.map((item) => (
                   <SortableResourceRow
@@ -4869,7 +3265,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
                     toggleSelected={toggleSelected}
                     openItem={openItem}
                     groups={groups}
-                    folders={resourceFolders}
                     tripCounts={tripCounts}
                     showTripsAction={tripsFeatureEnabled}
                     setTripPanelItem={setTripPanelItem}
@@ -4878,27 +3273,14 @@ export function MainApp({ windowLabel }: MainAppProps) {
                     setEditor={setEditor}
                     removeItem={removeItem}
                     resourceIconStyle={resourceIconStyle}
-                    openContextMenu={handleAppContextMenu}
                     isSimple={isSimple}
                     densityFactor={densityFactor}
                   />
                 ))}
               </SortableContext>
               {createPortal(
-                <DragOverlay className="resource-drag-overlay">
-                  {activeDraggedFolder ? (
-                    <div
-                      className="resource-tree-item folder-drag-overlay"
-                      style={{ "--tree-depth": 0, "--folder-color": activeDraggedFolder.color ?? "var(--accent)" } as CSSProperties}
-                    >
-                      <span className="resource-tree-expander empty" />
-                      <span className="resource-tree-icon">
-                        <Icon name={activeDraggedFolder.icon ?? "FolderOpen"} size={15} />
-                      </span>
-                      <span className="resource-tree-name">{activeDraggedFolder.name}</span>
-                      <em>{folderCounts.get(activeDraggedFolder.id) ?? 0}</em>
-                    </div>
-                  ) : activeId ? (() => {
+                <DragOverlay>
+                  {activeId ? (() => {
                     const activeItem = itemById.get(activeId);
                     if (!activeItem) return null;
                     return (
@@ -4910,7 +3292,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
                         toggleSelected={toggleSelected}
                         openItem={openItem}
                         groups={groups}
-                        folders={resourceFolders}
                         tripCounts={tripCounts}
                         showTripsAction={tripsFeatureEnabled}
                         setTripPanelItem={setTripPanelItem}
@@ -4928,18 +3309,91 @@ export function MainApp({ windowLabel }: MainAppProps) {
                 </DragOverlay>,
                 document.body
               )}
+            </DndContext>
             {filteredItems.length === 0 && (
               <div className="empty-state">
                 <Search size={28} />
                 <strong>未发现匹配资源</strong>
-                <span>调整当前目录搜索、标签筛选，或把资源放入此目录。</span>
+                <span>调整搜索关键词、切换分组，或导入本地资源。</span>
               </div>
             )}
           </div>
         </section>
 
-        </section>
-      </DndContext>
+        <aside className="surface-panel operations-panel">
+          <section className="status-card">
+            <div className="status-icon">
+              <ShieldCheck size={20} />
+            </div>
+            <div>
+              <p>系统状态</p>
+              <strong>工作台运行正常</strong>
+              <span>所有核心插件已就绪</span>
+            </div>
+          </section>
+
+          {workspacesFeatureEnabled && dashboardWorkspaces.length > 0 && (
+            <section className="operation-group workspaces-operation-group">
+              <div className="section-head slim">
+                <h2>快捷工作区</h2>
+              </div>
+              <div className="dashboard-workspaces-list">
+                {dashboardWorkspaces.slice(0, 5).map((ws) => (
+                  <div key={ws.id} className="dashboard-workspace-item">
+                    <div 
+                      className="dashboard-ws-icon" 
+                      style={{ 
+                        backgroundColor: `${ws.color}15`, 
+                        color: ws.color,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center"
+                      }}
+                    >
+                      {getWorkspaceIcon(ws.icon || "Briefcase", ws.color, 16)}
+                    </div>
+                    <div className="dashboard-ws-info">
+                      <strong>{ws.name}</strong>
+                      <span>已启动 {ws.launchCount || 0} 次</span>
+                    </div>
+                    <button 
+                      type="button" 
+                      className="dashboard-ws-run-btn" 
+                      onClick={() => launchWorkspaceFromDashboard(ws.id)}
+                      title="启动此工作区"
+                    >
+                      <Play size={12} fill="currentColor" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section className="operation-group">
+            <div className="section-head slim">
+              <h2>常用操作</h2>
+            </div>
+            <button className="wide-command" onClick={() => runNativeItemScan("shortcuts")} disabled={busy || !pluginEnabled("core-shortcuts")}>
+              <ScanSearch size={17} />
+              <span>扫描本地程序</span>
+            </button>
+            <button className="wide-command" onClick={() => runNativeItemScan("bookmarks")} disabled={busy || !pluginEnabled("core-bookmarks")}>
+              <Bookmark size={17} />
+              <span>导入浏览器书签</span>
+            </button>
+            <button className="wide-command" onClick={runExport} disabled={busy}>
+              <Download size={17} />
+              <span>导出数据备份</span>
+            </button>
+          </section>
+
+          <section className="toast-line">
+            <CheckCircle2 size={18} />
+            <span>{toast}</span>
+          </section>
+        </aside>
+      </section>
     </section>
   );
 
@@ -5068,7 +3522,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
         <p className="eyebrow">Behavior</p>
         <h2>即时生效</h2>
         <p>停用网址插件后，相关分组和资源会从界面隐藏，数据仍保留在本地数据库中。</p>
-        <button className="wide-command" onClick={() => selectResourceFolder("web")}>
+        <button className="wide-command" onClick={() => setActiveGroup("web")}>
           <Globe size={17} />
           <span>检查网址分组</span>
         </button>
@@ -5424,13 +3878,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
             <select value={settings?.displayMode === "detailed" ? "detailed" : "simple"} onChange={(event) => changeDisplayMode(event.target.value as "simple" | "detailed")}>
               <option value="simple">简约模式</option>
               <option value="detailed">详细模式</option>
-            </select>
-          </label>
-          <label>
-            资源管理模式
-            <select value={resourceMode} onChange={(event) => changeResourceMode(event.target.value as "hierarchical" | "single")}>
-              <option value="hierarchical">分级资源模式：目录导航 + 标签筛选</option>
-              <option value="single">单级资源模式：仅使用标签分类</option>
             </select>
           </label>
           <button className="wide-command" onClick={addCustomGroup}>
@@ -5801,7 +4248,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const renderAppDialog = () => {
     if (!dialog) return null;
     const moveGroups = visibleGroups.filter((group) => group.id !== "all");
-    const moveFolders = resourceFolders.filter((folder) => isAssignableFolder(folder.id, resourceFolders));
 
     if (dialog.type === "group-hotkey") {
       const group = groups.find((g) => g.id === dialog.groupId);
@@ -5881,158 +4327,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
             <div className="modal-actions">
               <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
               <button type="submit" className="primary-action" disabled={busy}>创建</button>
-            </div>
-          </form>
-        </section>
-      );
-    }
-
-    if (dialog.type === "folder") {
-      const parentName = dialog.parentId ? getFolderById(dialog.parentId, resourceFolders)?.name ?? "资源导航" : "资源导航";
-      return (
-        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
-          <form
-            className="modal-panel dialog-panel"
-            onSubmit={(event) => {
-              event.preventDefault();
-              confirmCreateSubfolder(dialog);
-            }}
-          >
-            <div className="modal-head">
-              <div>
-                <p className="eyebrow">New folder</p>
-                <h2>新建子目录</h2>
-              </div>
-              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
-                <X size={18} />
-              </button>
-            </div>
-            <div className="dialog-body folder-dialog-body">
-              <label>
-                父目录
-                <input readOnly value={parentName} />
-              </label>
-              <label>
-                目录名称
-                <input
-                  autoFocus
-                  value={dialog.name}
-                  onChange={(event) =>
-                    setDialog((current) => (current?.type === "folder" ? { ...current, name: event.target.value } : current))
-                  }
-                  placeholder="例如：文献检索"
-                />
-              </label>
-              <label>
-                图标
-                <select
-                  value={dialog.icon}
-                  onChange={(event) =>
-                    setDialog((current) => (current?.type === "folder" ? { ...current, icon: event.target.value } : current))
-                  }
-                >
-                  <option value="FolderOpen">文件夹</option>
-                  <option value="Globe">网站</option>
-                  <option value="AppWindow">应用</option>
-                  <option value="NotebookText">学习</option>
-                  <option value="Database">数据库</option>
-                  <option value="Sparkles">AI</option>
-                  <option value="Briefcase">工作区</option>
-                </select>
-              </label>
-              <label>
-                颜色
-                <input
-                  type="color"
-                  value={dialog.color}
-                  onChange={(event) =>
-                    setDialog((current) => (current?.type === "folder" ? { ...current, color: event.target.value } : current))
-                  }
-                />
-              </label>
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
-              <button type="submit" className="primary-action" disabled={busy}>
-                <Save size={18} />
-                保存
-              </button>
-            </div>
-          </form>
-        </section>
-      );
-    }
-
-    if (dialog.type === "rename-folder") {
-      const folder = getFolderById(dialog.folderId, resourceFolders);
-      return (
-        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
-          <form
-            className="modal-panel dialog-panel"
-            onSubmit={(event) => {
-              event.preventDefault();
-              confirmRenameFolder(dialog);
-            }}
-          >
-            <div className="modal-head">
-              <div>
-                <p className="eyebrow">Rename folder</p>
-                <h2>重命名目录</h2>
-              </div>
-              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
-                <X size={18} />
-              </button>
-            </div>
-            <div className="dialog-body folder-dialog-body">
-              <label>
-                当前目录
-                <input readOnly value={folder ? folderPathLabel(folder.id) : "未知目录"} />
-              </label>
-              <label>
-                目录名称
-                <input
-                  autoFocus
-                  value={dialog.name}
-                  onChange={(event) =>
-                    setDialog((current) => (current?.type === "rename-folder" ? { ...current, name: event.target.value } : current))
-                  }
-                  placeholder="例如：文献检索"
-                />
-              </label>
-              <label>
-                图标
-                <select
-                  value={dialog.icon}
-                  onChange={(event) =>
-                    setDialog((current) => (current?.type === "rename-folder" ? { ...current, icon: event.target.value } : current))
-                  }
-                >
-                  <option value="FolderOpen">文件夹</option>
-                  <option value="Globe">网站</option>
-                  <option value="AppWindow">应用</option>
-                  <option value="NotebookText">学习</option>
-                  <option value="Database">数据库</option>
-                  <option value="Sparkles">AI</option>
-                  <option value="Briefcase">工作区</option>
-                </select>
-              </label>
-              <label>
-                颜色
-                <input
-                  type="color"
-                  value={dialog.color}
-                  onChange={(event) =>
-                    setDialog((current) => (current?.type === "rename-folder" ? { ...current, color: event.target.value } : current))
-                  }
-                />
-              </label>
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
-              <button type="submit" className="primary-action" disabled={busy}>
-                <Save size={18} />
-                保存
-              </button>
             </div>
           </form>
         </section>
@@ -6147,50 +4441,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
       );
     }
 
-    if (dialog.type === "batch-folder-move") {
-      return (
-        <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
-          <div className="modal-panel dialog-panel">
-            <div className="modal-head">
-              <div>
-                <p className="eyebrow">Batch folder move</p>
-                <h2>移动到目录</h2>
-              </div>
-              <button type="button" className="icon-action" onClick={() => setDialog(null)}>
-                <X size={18} />
-              </button>
-            </div>
-            <div className="dialog-body">
-              <p>已选择 {selectedIds.length} 个资源。移动会改变资源的主要收纳目录，不会修改标签。</p>
-              <label>
-                目标目录
-                <select
-                  value={dialog.folderId}
-                  onChange={(event) =>
-                    setDialog((current) => (current?.type === "batch-folder-move" ? { ...current, folderId: event.target.value } : current))
-                  }
-                >
-                  {renderFolderOptions()}
-                </select>
-              </label>
-              <small className="field-hint">{folderPathLabel(dialog.folderId)}</small>
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="secondary-action" onClick={() => setDialog(null)}>取消</button>
-              <button
-                type="button"
-                className="primary-action"
-                onClick={() => void confirmBatchMoveSelectedToFolder(dialog.folderId)}
-                disabled={busy || selectedIds.length === 0 || moveFolders.length === 0}
-              >
-                移动
-              </button>
-            </div>
-          </div>
-        </section>
-      );
-    }
-
     if (dialog.type === "template") {
       return (
         <section className="palette-backdrop centered-backdrop" role="dialog" aria-modal="true" onClick={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
@@ -6237,24 +4487,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
   const renderContextMenu = () => {
     if (!contextMenu) return null;
     const resource = contextMenu.kind === "resource" ? items.find((item) => item.id === contextMenu.resourceId) : null;
-    const contextFolder = contextMenu.kind === "folder" && contextMenu.folderId
-      ? getFolderById(contextMenu.folderId, resourceFolders)
-      : null;
-    const contextFolderChildren = contextFolder ? getFolderChildren(contextFolder.id, resourceFolders) : [];
-    const contextFolderDirectItems = contextFolder
-      ? items.filter((item) => primaryFolderIdForItem(item, resourceFolders) === contextFolder.id)
-      : [];
-    const resourceFolderId = resource ? primaryFolderIdForItem(resource, resourceFolders) : null;
-    const resourceMoveTargets = resource && isHierarchicalResourceMode
-      ? resourceFolders
-          .filter((folder) => isAssignableFolder(folder.id, resourceFolders) && folder.id !== resourceFolderId)
-          .sort((a, b) => {
-            const aDepth = getFolderPath(a.id, resourceFolders).length;
-            const bDepth = getFolderPath(b.id, resourceFolders).length;
-            return aDepth - bDepth || a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "zh-Hans-CN");
-          })
-          .slice(0, 12)
-      : [];
 
     return (
       <section
@@ -6281,29 +4513,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
             <span className="context-separator" />
             <button type="button" onClick={() => void runResourceContextAction("reveal", resource)}>打开所在位置</button>
             <button type="button" onClick={() => void runResourceContextAction("copy", resource)}>复制路径 / URL</button>
-            {isHierarchicalResourceMode && (
-              <>
-                <span className="context-separator" />
-                <span className="context-label">移动到目录</span>
-                <div className="context-menu-grid">
-                  {resourceMoveTargets.length > 0 ? (
-                    resourceMoveTargets.map((folder) => (
-                      <button
-                        key={folder.id}
-                        type="button"
-                        title={folderPathLabel(folder.id)}
-                        onClick={() => void moveResourceToFolder(resource, folder.id)}
-                      >
-                        <Icon name={folder.icon ?? "FolderOpen"} size={14} />
-                        <span>{folderPathLabel(folder.id).replace("资源中心 / ", "")}</span>
-                      </button>
-                    ))
-                  ) : (
-                    <button type="button" disabled>没有可移动的其他目录</button>
-                  )}
-                </div>
-              </>
-            )}
             <span className="context-separator" />
             <button type="button" onClick={() => void runResourceContextAction("edit", resource)}>编辑资源</button>
             <button type="button" onClick={() => void runResourceContextAction("favorite", resource)}>
@@ -6324,60 +4533,13 @@ export function MainApp({ windowLabel }: MainAppProps) {
           </>
         )}
 
-        {contextMenu.kind === "folder" && contextFolder && (
-          <>
-            <button type="button" onClick={() => { selectResourceFolder(contextFolder.id); setContextMenu(null); }}>打开此目录</button>
-            <button type="button" onClick={() => { openCreateSubfolder(contextFolder.id); setContextMenu(null); }}>新建子目录</button>
-            <button type="button" onClick={() => { openCreateResource("app", contextFolder.id); setContextMenu(null); }}>在此目录添加资源</button>
-            <span className="context-separator" />
-            <button
-              type="button"
-              onClick={() => {
-                void copyText(folderPathLabel(contextFolder.id)).then(() => setToast("已复制目录路径"));
-                setContextMenu(null);
-              }}
-            >
-              复制目录路径
-            </button>
-            <button
-              type="button"
-              disabled={contextFolderChildren.length === 0}
-              onClick={() => {
-                toggleResourceFolderExpanded(contextFolder.id);
-                setContextMenu(null);
-              }}
-            >
-              {expandedFolderIds.includes(contextFolder.id) ? "收起子目录" : "展开子目录"}
-            </button>
-            <span className="context-separator" />
-            <span className="context-label">
-              {contextFolderDirectItems.length} 个直属资源 · {contextFolderChildren.length} 个子目录
-            </span>
-            {contextFolder.source === "user" ? (
-              <>
-                <button type="button" onClick={() => { openRenameFolderDialog(contextFolder.id); setContextMenu(null); }}>重命名目录</button>
-                <button
-                  type="button"
-                  className="context-danger"
-                  disabled={contextFolderDirectItems.length > 0 || contextFolderChildren.length > 0}
-                  onClick={() => deleteCustomFolder(contextFolder.id)}
-                >
-                  删除空目录
-                </button>
-              </>
-            ) : (
-              <button type="button" disabled>系统目录不可重命名或删除</button>
-            )}
-          </>
-        )}
-
         {contextMenu.kind === "group" && contextMenu.groupId && (() => {
           const targetGroup = groups.find((candidate) => candidate.id === contextMenu.groupId);
           if (!targetGroup) return null;
           const hotkey = hotkeysBoundToGroup[targetGroup.id];
           return (
             <>
-              <button type="button" onClick={() => { selectResourceFolder(targetGroup.id); setContextMenu(null); }}>{"切换到此目录"}</button>
+              <button type="button" onClick={() => { setActiveGroup(targetGroup.id); setContextMenu(null); }}>{"切换到此标签"}</button>
               
               {hotkeyBinderEnabled && (
                 <>
@@ -6853,7 +5015,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
                     group: t.group,
                     target: resolvePath(t.target),
                     aliases: [],
-                    tags: [],
+                    tags: [t.kind === "action_chain" ? "automation" : "template"],
                     icon: t.icon,
                     accent: t.accent,
                     favorite: t.favorite ?? false
@@ -6865,15 +5027,7 @@ export function MainApp({ windowLabel }: MainAppProps) {
               }
               // 3. Reload from database so React state reflects what's actually persisted
               await reload();
-              const firstFolderId = groups[0]?.id;
-              if (firstFolderId) {
-                setHideResourceNav(false);
-                localStorage.setItem("orbitstart.dashboard.hide_resource_nav", "false");
-                setActiveFolderId(firstFolderId);
-                setActiveGroup(firstFolderId);
-                setExpandedFolderIds((current) => Array.from(new Set([...current, firstFolderId])));
-              }
-              setToast(`已在资源导航中创建 ${created} 个示例资源`);
+              setToast(`已创建 ${created} 个示例资源`);
             } catch (error) {
               setToast(`创建示例资源失败：${String(error)}`);
             } finally {
@@ -6928,17 +5082,6 @@ export function MainApp({ windowLabel }: MainAppProps) {
           <span className="window-brand-glyph">{renderBrandIcon(12)}</span>
           <span>OrbitStart</span>
         </div>
-        {activeView === "dashboard" && isHierarchicalResourceMode && (
-          <button
-            type="button"
-            className={`window-resource-toggle ${resourceSideCollapsed ? "" : "active"}`}
-            title={resourceSideCollapsed ? "展开资源导航与工作台 (Ctrl+B)" : "收起资源导航与工作台 (Ctrl+B)"}
-            onClick={toggleResourceSidePanels}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            {resourceSideCollapsed ? <PanelRightOpen size={14} /> : <PanelRightClose size={14} />}
-          </button>
-        )}
         <div className="window-drag-fill" data-tauri-drag-region />
         <div className="window-controls" onPointerDown={(event) => event.stopPropagation()}>
           <button type="button" aria-label="Minimize" title="Minimize" onClick={minimizeWindow}>-</button>
@@ -7017,6 +5160,9 @@ export function MainApp({ windowLabel }: MainAppProps) {
               <button type="button" className="icon-action" title="扫描本地程序" onClick={() => runNativeItemScan("shortcuts")} disabled={busy || !pluginEnabled("core-shortcuts")}>
                 <ScanSearch size={19} />
               </button>
+              <button type="button" className="icon-action" title="数据备份" onClick={() => setBackupOpen(true)}>
+                <Database size={19} />
+              </button>
               <button type="button" className="icon-action" title="命令面板" onClick={() => setPaletteOpen(true)}>
                 <Search size={19} />
               </button>
@@ -7024,29 +5170,45 @@ export function MainApp({ windowLabel }: MainAppProps) {
           )}
         </header>
 
-        {((activeView === "trips" && tripsFeatureEnabled) || (activeView === "obsidian" && obsidianFeatureEnabled)) && (
+        {(activeView === "dashboard" || (activeView === "trips" && tripsFeatureEnabled) || (activeView === "obsidian" && obsidianFeatureEnabled)) && (
           <section className="hero-strip">
             <div className="search-shell">
               <Search size={19} />
               <input
                 ref={searchInputRef}
-                value={activeView === "trips" ? tripsQuery : obsidianQuery}
+                value={
+                  activeView === "dashboard"
+                    ? query
+                    : activeView === "trips"
+                    ? tripsQuery
+                    : obsidianQuery
+                }
                 onChange={(event) => {
                   const val = event.target.value;
-                  if (activeView === "trips") {
+                  if (activeView === "dashboard") {
+                    setQuery(val);
+                  } else if (activeView === "trips") {
                     setTripsQuery(val);
                   } else {
                     setObsidianQuery(val);
                   }
                 }}
                 placeholder={
-                  activeView === "trips"
+                  activeView === "dashboard"
+                    ? "搜索应用、文件、网址、脚本、插件或标签..."
+                    : activeView === "trips"
                     ? "搜索 Trip 标题、内容、状态或标签..."
                     : "搜索笔记标题、路径、Vault 或标签..."
                 }
               />
               <kbd>Ctrl K</kbd>
             </div>
+            {activeView === "dashboard" && (
+              <button type="button" className="primary-action" onClick={() => setEditor({ mode: "create", input: makeEmptyInput() })} disabled={busy}>
+                <PlusCircle size={18} />
+                添加资源
+              </button>
+            )}
           </section>
         )}
 
@@ -7293,33 +5455,34 @@ export function MainApp({ windowLabel }: MainAppProps) {
                   placeholder="显示在标题下方"
                 />
               </label>
-              {isHierarchicalResourceMode && (() => {
-                const selectedFolderId = primaryFolderIdFromGroup(editor.input.group, editor.input.kind, resourceFolders);
-                const safeSelectedFolderId = isAssignableFolder(selectedFolderId, resourceFolders)
-                  ? selectedFolderId
-                  : defaultFolderForKind(editor.input.kind);
-                return (
-                  <label className="wide-field">
-                    放入目录
-                    <select
-                      value={safeSelectedFolderId}
-                      onChange={(event) => {
-                        const nextFolderId = event.target.value;
-                        setEditor({
-                          ...editor,
-                          input: {
-                            ...editor.input,
-                            group: setPrimaryFolderInGroup(editor.input.group, nextFolderId, editor.input.kind, resourceFolders)
-                          }
-                        });
-                      }}
-                    >
-                      {renderFolderOptions()}
-                    </select>
-                    <small className="field-hint">{folderPathLabel(safeSelectedFolderId)}</small>
-                  </label>
-                );
-              })()}
+              <label className="wide-field">
+                所属分组 / 标签 (支持多选)
+                <div className="group-checkbox-grid">
+                  {visibleGroups.filter((group) => group.id !== "all").map((group) => {
+                    const selectedGroups = splitGroupIds(editor.input.group);
+                    const isChecked = selectedGroups.includes(group.id);
+                    return (
+                      <button
+                        key={group.id}
+                        type="button"
+                        className={`group-tag-checkbox ${isChecked ? "checked" : ""}`}
+                        onClick={() => {
+                          const next = isChecked
+                            ? selectedGroups.filter((g) => g !== group.id)
+                            : [...selectedGroups, group.id];
+                          setEditor({
+                            ...editor,
+                            input: { ...editor.input, group: joinGroupIds(next) }
+                          });
+                        }}
+                      >
+                        <Icon name={group.icon} size={14} />
+                        <span>{group.title}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </label>
               <label>
                 颜色
                 <input
